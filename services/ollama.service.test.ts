@@ -20,7 +20,10 @@ describe("OllamaService.visionExtractText", () => {
 
     expect(result).toBe("Transcribed invoice text");
 
-    const [url, body] = vi.mocked(axios.post).mock.calls[0];
+    const [url, body] = vi.mocked(axios.post).mock.calls[0] as [
+      string,
+      { model: string; messages: { images: string[] }[] },
+    ];
     expect(url).toBe(`${env.OLLAMA_BASE_URL.replace(/\/$/, "")}/api/chat`);
     expect(body.model).toBe(env.OLLAMA_VISION_MODEL);
     expect(body.messages[0].images).toEqual(["base64imagedata"]);
@@ -32,7 +35,7 @@ describe("OllamaService.visionExtractText", () => {
     const service = new OllamaService();
     await service.visionExtractText(["img"], "custom-vision-model:7b");
 
-    const [, body] = vi.mocked(axios.post).mock.calls[0];
+    const [, body] = vi.mocked(axios.post).mock.calls[0] as [string, { model: string }];
     expect(body.model).toBe("custom-vision-model:7b");
   });
 });
