@@ -2,6 +2,13 @@ import { SearchService } from "@/services/search.service";
 import { OllamaService } from "@/services/ollama.service";
 import type { SearchResultItem } from "@/services/search.service";
 
+// NOTE: retrieval here goes through SearchService, which as of the SigLIP2 embedding
+// migration has a documented, accepted limitation (see search.service.ts's calibration
+// comment) — plain English queries do not reliably rank the correct invoice at top-1.
+// That means an answer below can read as confidently grounded ("per Invoice INV-1002...")
+// while actually citing the wrong invoice, since the LLM just synthesizes from whatever
+// SearchService returns. This is inherited, not introduced here — no fix needed in this
+// file, just flagging it since nothing else in the RAG path surfaces the risk.
 const RETRIEVAL_TOP_K = 8;
 const NO_CONTEXT_ANSWER =
   "I couldn't find anything relevant in the indexed documents for that question. Try rephrasing it or ask about a topic covered by an ingested invoice.";
