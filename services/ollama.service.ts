@@ -109,4 +109,34 @@ export class OllamaService {
 
     return String(response.data?.message?.content ?? "").trim();
   }
+
+  async visionExtractText(images: string[], model: string = env.OLLAMA_VISION_MODEL): Promise<string> {
+    const baseUrl = env.OLLAMA_BASE_URL.replace(/\/$/, "");
+
+    const response = await axios.post(
+      `${baseUrl}/api/chat`,
+      {
+        model,
+        stream: false,
+        messages: [
+          {
+            role: "user",
+            content:
+              "Transcribe all readable text from these document page images, in reading order, exactly as it appears. Do not summarize, translate, or add commentary — output only the transcribed text.",
+            images,
+          },
+        ],
+        options: { temperature: 0.1 },
+      },
+      {
+        // Vision models processing page images run noticeably slower than the 1.5B
+        // text-only chat model on CPU-only Ollama, similar in spirit to why
+        // extractInvoiceData needs 240000ms for schema-constrained decoding — 180s
+        // leaves headroom for multi-page image input without the schema-decoding cost.
+        timeout: 180000,
+      }
+    );
+
+    return String(response.data?.message?.content ?? "").trim();
+  }
 }
