@@ -39,3 +39,33 @@ describe("OllamaService.visionExtractText", () => {
     expect(body.model).toBe("custom-vision-model:7b");
   });
 });
+
+describe("OllamaService.classifyDocument", () => {
+  beforeEach(() => {
+    vi.mocked(axios.post).mockReset();
+  });
+
+  it("parses a valid schema-constrained classification response", async () => {
+    vi.mocked(axios.post).mockResolvedValue({
+      data: { message: { content: JSON.stringify({ documentType: "INVOICE", confidence: 0.88 }) } },
+    });
+
+    const service = new OllamaService();
+    const outcome = await service.classifyDocument("some invoice text");
+
+    expect(outcome.success).toBe(true);
+    expect(outcome.data).toEqual({ documentType: "INVOICE", confidence: 0.88 });
+  });
+
+  it("returns a failure outcome on invalid JSON", async () => {
+    vi.mocked(axios.post).mockResolvedValue({
+      data: { message: { content: "not json" } },
+    });
+
+    const service = new OllamaService();
+    const outcome = await service.classifyDocument("some text");
+
+    expect(outcome.success).toBe(false);
+    expect(outcome.data).toBeNull();
+  });
+});

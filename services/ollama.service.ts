@@ -5,6 +5,11 @@ import {
   InvoiceExtractionJsonSchema,
   type InvoiceExtraction,
 } from "@/schemas/invoice.schema";
+import {
+  DocumentClassificationSchema,
+  DocumentClassificationJsonSchema,
+  type DocumentClassification,
+} from "@/schemas/document-classification.schema";
 
 function buildExtractionPrompt(documentText: string): string {
   return `You are an expert invoice data extraction assistant. Extract ALL available information from the invoice text below into the required JSON structure.
@@ -27,6 +32,22 @@ export interface InvoiceExtractionOutcome {
   raw: string;
   success: boolean;
   data: InvoiceExtraction | null;
+  error?: string;
+}
+
+function buildClassificationPrompt(documentText: string): string {
+  return `Classify the document type of the text below into exactly one of: INVOICE, RECEIPT, PURCHASE_ORDER, CONTRACT, RESUME, OTHER. Pick "OTHER" if none of the specific types clearly match. Also give a confidence between 0 and 1 for your classification.
+
+Document text:
+"""
+${documentText.slice(0, 4000)}
+"""`;
+}
+
+export interface DocumentClassificationOutcome {
+  raw: string;
+  success: boolean;
+  data: DocumentClassification | null;
   error?: string;
 }
 
@@ -65,6 +86,47 @@ export class OllamaService {
     }
 
     const result = InvoiceExtractionSchema.safeParse(parsedJson);
+    if (!result.success) {
+      return { raw, success: false, data: null, error: result.error.message };
+    }
+
+    return { raw, success: true, data: result.data };
+  }
+
+  async classifyDocument(
+    documentText: string,
+    model: string = env.OLLAMA_CHAT_MODEL
+  ): Promise<DocumentClassificationOutcome> {
+    const baseUrl = env.OLLAMA_BASE_URL.replace(/\/$/, "");
+    const prompt = buildClassificationPrompt(documentText);
+
+    const response = await axios.post(
+      `${baseUrl}/api/chat`,
+      {
+        model,
+        stream: false,
+        messages: [{ role: "user", content: prompt }],
+        format: DocumentClassificationJsonSchema,
+        options: { temperature: 0.1 },
+      },
+      {
+        // Same reasoning as extractInvoiceData's timeout, but this schema is tiny
+        // (two fields) compared to the full invoice schema, so schema-constrained
+        // decoding overhead is much smaller — 60s is ample.
+        timeout: 60000,
+      }
+    );
+
+    const raw = String(response.data?.message?.content ?? "");
+
+    let parsedJson: unknown;
+    try {
+      parsedJson = JSON.parse(raw);
+    } catch {
+      return { raw, success: false, data: null, error: "Model response was not valid JSON." };
+    }
+
+    const result = DocumentClassificationSchema.safeParse(parsedJson);
     if (!result.success) {
       return { raw, success: false, data: null, error: result.error.message };
     }
