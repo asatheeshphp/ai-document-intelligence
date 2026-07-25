@@ -151,7 +151,7 @@ export class DocumentIngestionService {
     const document = await this.repository.createDocument({
       emailId: email._id,
       filename: input.filename ?? path.basename(absolutePath),
-      documentType: "INVOICE",
+      documentType: "UNKNOWN",
       status: "EXTRACTING",
       extractedText: text,
       metadata: { sourcePath: absolutePath, ...(input.metadata ?? {}) },
