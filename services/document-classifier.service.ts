@@ -8,6 +8,7 @@ export class DocumentClassifierService {
     const outcome = await this.ollamaService.classifyDocument(text);
 
     if (!outcome.success || !outcome.data) {
+      console.warn("Document classification failed, falling back to OTHER:", outcome.error);
       return { documentType: "OTHER", confidence: 0 };
     }
 
