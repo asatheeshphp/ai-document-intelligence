@@ -1,0 +1,280 @@
+import fs from "node:fs/promises";
+import path from "node:path";
+import type { Types } from "mongoose";
+import { env } from "@/config/env";
+import { ProcessingRepository } from "@/repositories/processing.repository";
+import { OllamaService } from "@/services/ollama.service";
+import { OcrService } from "@/services/ocr.service";
+import { extractPdfText } from "@/utils/pdf-text-extractor";
+import { mapInvoiceExtractionToInvoiceFields } from "@/schemas/invoice-mapper";
+import { InvoiceIndexingService } from "@/services/invoice-indexing.service";
+import type { IDocument } from "@/models/document.model";
+import type { IExtraction } from "@/models/extraction.model";
+import type { IInvoice } from "@/models/invoice.model";
+
+export interface ProcessLocalDocumentInput {
+  sourcePath: string;
+  filename?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export class DocumentIngestionService {
+  constructor(
+    private readonly repository: ProcessingRepository = new ProcessingRepository(),
+    private readonly ollamaService: OllamaService = new OllamaService(),
+    private readonly indexingService: InvoiceIndexingService = new InvoiceIndexingService(
+      repository,
+      ollamaService
+    )
+  ) {}
+
+  async processLocalDocument(input: ProcessLocalDocumentInput) {
+    const absolutePath = path.resolve(input.sourcePath);
+    const fileBuffer = await fs.readFile(absolutePath);
+    const fileSize = fileBuffer.length;
+    const fileName = path.basename(absolutePath);
+
+    let text = "";
+    let extractedText: string | undefined;
+    let numPages: number | null = null;
+    let extractionDurationMs = 0;
+    let requiresOcr = false;
+    let pdfExtractionError: string | null = null;
+
+    if (absolutePath.toLowerCase().endsWith(".pdf")) {
+      let startTime = 0;
+      try {
+        startTime = Date.now();
+        const pdfResult = await extractPdfText(fileBuffer);
+        extractionDurationMs = Date.now() - startTime;
+
+        const normalizedText = pdfResult.text.trim();
+        numPages = pdfResult.numPages;
+
+        console.info(JSON.stringify({
+          event: "pdf-parse-debug",
+          filename: fileName,
+          fileSize,
+          numPages,
+          extractedCharacters: normalizedText.length,
+          preview: normalizedText.slice(0, 300),
+          durationMs: extractionDurationMs,
+          status: normalizedText.length > 0 ? "PARSE_SUCCESS" : "PARSE_EMPTY",
+        }));
+
+        if (!normalizedText) {
+          requiresOcr = true;
+          pdfExtractionError = "PDF contained no extractable text.";
+          console.info(JSON.stringify({
+            event: "pdf-extraction",
+            filename: fileName,
+            fileSize,
+            numPages,
+            extractedCharacters: 0,
+            preview: "",
+            durationMs: extractionDurationMs,
+            status: "OCR_REQUIRED",
+          }));
+        } else {
+          text = normalizedText;
+          extractedText = normalizedText;
+          console.info(JSON.stringify({
+            event: "pdf-extraction",
+            filename: fileName,
+            fileSize,
+            numPages,
+            extractedCharacters: normalizedText.length,
+            preview: normalizedText.slice(0, 500),
+            durationMs: extractionDurationMs,
+            status: "SUCCEEDED",
+          }));
+        }
+      } catch (err) {
+        extractionDurationMs = Date.now() - startTime;
+        requiresOcr = true;
+        pdfExtractionError = err instanceof Error ? err.message : "Unknown PDF extraction error.";
+        console.error(JSON.stringify({
+          event: "pdf-extraction-failed",
+          filename: fileName,
+          fileSize,
+          numPages,
+          extractedCharacters: 0,
+          preview: "",
+          durationMs: extractionDurationMs,
+          status: "OCR_REQUIRED",
+          error: pdfExtractionError,
+        }));
+      }
+    } else {
+      text = fileBuffer.toString("utf-8");
+      extractedText = text.trim();
+    }
+
+    let ocrSucceeded = false;
+    let ocrAvailable = false;
+
+    // If extracted text is too short, attempt OCR fallback
+    if (text.trim().length < 200) {
+      const ocr = new OcrService();
+      try {
+        const ocrText = await ocr.ocrPdf(absolutePath);
+        ocrAvailable = true;
+        if (ocrText && ocrText.trim().length > text.trim().length) {
+          text = ocrText;
+          ocrSucceeded = true;
+        }
+      } catch (err) {
+        // log and continue with whatever text we have; if OCR is unavailable then mark document for OCR later
+        // eslint-disable-next-line no-console
+        console.warn("OCR fallback failed:", err instanceof Error ? err.message : err);
+      }
+    }
+
+    const email = await this.repository.createEmail({
+      messageId: `local-${Date.now()}`,
+      senderAddress: "local-source@example.com",
+      subject: `Local document import: ${input.filename ?? path.basename(absolutePath)}`,
+      metadata: { sourcePath: absolutePath, ...(input.metadata ?? {}) },
+    });
+
+    const document = await this.repository.createDocument({
+      emailId: email._id,
+      filename: input.filename ?? path.basename(absolutePath),
+      documentType: "INVOICE",
+      status: "EXTRACTING",
+      extractedText: text,
+      metadata: { sourcePath: absolutePath, ...(input.metadata ?? {}) },
+    });
+
+    if (text.trim().length < 200 && !ocrSucceeded) {
+      await this.repository.updateDocumentStatus(document._id, "OCR_REQUIRED", {
+        lastError: "OCR is required for this document. Install OCR tooling or use a text-searchable PDF.",
+      });
+
+      return {
+        email,
+        document,
+        extraction: null,
+        invoice: null,
+        message: "OCR is required for this document.",
+      };
+    }
+
+    const extractionOutcome = await this.ollamaService.extractInvoiceData(text);
+
+    const extraction = await this.repository.createExtraction({
+      documentId: document._id,
+      status: extractionOutcome.success ? "SUCCEEDED" : "FAILED",
+      attempts: 1,
+      modelName: env.OLLAMA_CHAT_MODEL,
+      rawResponse: extractionOutcome.raw,
+      structuredData: extractionOutcome.data ?? {},
+      lastError: extractionOutcome.error ?? null,
+      metadata: { source: "local-folder" },
+    });
+
+    await this.repository.updateDocumentStatus(document._id, "EXTRACTED", {
+      extractedText: text,
+    });
+
+    if (!extractionOutcome.success || !extractionOutcome.data) {
+      return {
+        email,
+        document,
+        extraction,
+        invoice: null,
+        message: "AI extraction failed. The raw model response was preserved on the extraction record for review.",
+      };
+    }
+
+    const invoice = await this.repository.createInvoice({
+      documentId: document._id,
+      ...mapInvoiceExtractionToInvoiceFields(extractionOutcome.data),
+      status: "EXTRACTED",
+      metadata: { source: "local-folder" },
+    });
+
+    await this.indexingService.replaceChunksAndEmbeddings(
+      document._id,
+      invoice._id,
+      extractionOutcome.data,
+      { source: "local-folder" }
+    );
+
+    return {
+      email,
+      document,
+      extraction,
+      invoice,
+    };
+  }
+
+  /**
+   * Re-runs AI extraction on an already-ingested document's stored text, upserts its
+   * Invoice, and rebuilds its chunks/embeddings. Shared by /api/ai/extract and
+   * /api/documents/:id/reindex so the logic exists in exactly one place.
+   */
+  async reextractDocument(documentId: Types.ObjectId | string): Promise<{
+    success: boolean;
+    document: IDocument | null;
+    extraction: IExtraction | null;
+    invoice: IInvoice | null;
+    error?: string;
+  }> {
+    const document = await this.repository.findDocumentById(documentId);
+    if (!document) {
+      return { success: false, document: null, extraction: null, invoice: null, error: "Document not found" };
+    }
+
+    const textToExtract = document.extractedText ?? "Invoice details are unavailable.";
+    const outcome = await this.ollamaService.extractInvoiceData(textToExtract);
+
+    const extraction = await this.repository.createExtraction({
+      documentId: document._id,
+      status: outcome.success ? "SUCCEEDED" : "FAILED",
+      attempts: 1,
+      modelName: env.OLLAMA_CHAT_MODEL,
+      rawResponse: outcome.raw,
+      structuredData: outcome.data ?? {},
+      lastError: outcome.error ?? null,
+      metadata: { source: "reindex" },
+    });
+
+    await this.repository.updateDocumentStatus(document._id, "EXTRACTED", {
+      extractedText: textToExtract,
+    });
+
+    if (!outcome.success || !outcome.data) {
+      return {
+        success: false,
+        document,
+        extraction,
+        invoice: null,
+        error: outcome.error ?? "AI extraction failed",
+      };
+    }
+
+    const invoice = await this.repository.upsertInvoiceByDocumentId({
+      documentId: document._id,
+      ...mapInvoiceExtractionToInvoiceFields(outcome.data),
+      status: "EXTRACTED",
+      metadata: { source: "reindex" },
+    });
+
+    if (!invoice) {
+      return {
+        success: false,
+        document,
+        extraction,
+        invoice: null,
+        error: "Failed to upsert invoice record.",
+      };
+    }
+
+    await this.indexingService.replaceChunksAndEmbeddings(document._id, invoice._id, outcome.data, {
+      source: "reindex",
+    });
+
+    return { success: true, document, extraction, invoice };
+  }
+}

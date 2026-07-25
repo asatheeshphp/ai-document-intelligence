@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(npm install *)",
+      "PowerShell(node --version)",
+      "PowerShell(Remove-Item *)",
+      "PowerShell(Invoke-RestMethod -Uri \"http://localhost:3000/api/documents/latest\" -Method Get | ConvertTo-Json -Depth 10)",
+      "PowerShell(Test-NetConnection *)",
+      "PowerShell(Invoke-RestMethod -Uri \"http://localhost:3000/api/documents/latest\" -Method Get)",
+      "PowerShell(Get-Process *)",
+      "PowerShell(Invoke-RestMethod -Uri \"http://127.0.0.1:11434/api/version\")",
+      "PowerShell(Invoke-RestMethod -Uri \"http://127.0.0.1:11434/api/tags\")",
+      "PowerShell(Invoke-RestMethod -Uri \"http://localhost:3000/api/dashboard/stats\" -Method Get | ConvertTo-Json -Depth 5)",
+      "PowerShell(Invoke-RestMethod -Uri \"http://localhost:3000/api/documents?page=1&limit=10\" -Method Get | ConvertTo-Json -Depth 6)",
+      "PowerShell(Invoke-RestMethod -Uri \"http://localhost:3000/api/documents/6a5c835c561f8c5bab1db46a\" -Method Get | ConvertTo-Json -Depth 6)",
+      "PowerShell(Invoke-RestMethod -Uri \"http://localhost:3000/api/documents/6a5c83d9561f8c5bab1db47c\" -Method Delete | ConvertTo-Json)",
+      "PowerShell(Invoke-RestMethod -Uri \"http://localhost:3000/api/documents/6a5c83d9561f8c5bab1db47c\" -Method Get)",
+      "PowerShell(Invoke-RestMethod -Uri \"http://localhost:3000/api/health\" -Method Get)",
+      "PowerShell(Invoke-RestMethod -Uri \"http://localhost:3000/api/documents?page=1&limit=5\" -Method Get | ConvertTo-Json -Depth 4)",
+      "WebSearch"
+    ]
+  }
+}

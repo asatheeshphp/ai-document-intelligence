@@ -1,0 +1,79 @@
+import { SearchService } from "@/services/search.service";
+import { OllamaService } from "@/services/ollama.service";
+import type { SearchResultItem } from "@/services/search.service";
+
+const RETRIEVAL_TOP_K = 8;
+const NO_CONTEXT_ANSWER =
+  "I couldn't find anything relevant in the indexed documents for that question. Try rephrasing it or ask about a topic covered by an ingested invoice.";
+
+export interface RagChatTurn {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface RagAnswerInput {
+  question: string;
+  history?: RagChatTurn[];
+}
+
+export interface RagAnswer {
+  answer: string;
+  sources: SearchResultItem[];
+}
+
+function formatSourceLabel(result: SearchResultItem, index: number): string {
+  const parts = [
+    result.invoice?.invoiceNumber ? `Invoice ${result.invoice.invoiceNumber}` : `Invoice ${index + 1}`,
+    result.invoice?.vendorName,
+    result.invoice?.invoiceDate ? new Date(result.invoice.invoiceDate).toISOString().slice(0, 10) : undefined,
+  ].filter(Boolean);
+
+  return parts.join(" — ");
+}
+
+function buildGroundedPrompt(question: string, history: RagChatTurn[], sources: SearchResultItem[]): string {
+  const contextBlocks = sources
+    .map((source, index) => `[${index + 1}] ${formatSourceLabel(source, index)}\n${source.chunkText}`)
+    .join("\n\n");
+
+  const historyBlock =
+    history.length > 0
+      ? `Prior conversation:\n${history.map((turn) => `${turn.role === "user" ? "User" : "Assistant"}: ${turn.content}`).join("\n")}\n\n`
+      : "";
+
+  return `You are an AI assistant answering questions about a company's indexed invoices. Answer ONLY using the context below — never invent facts that aren't there.
+
+Rules:
+- If the context doesn't contain enough information to answer, say so plainly instead of guessing.
+- When you use a fact from the context, mention which invoice it came from (e.g. "Invoice INV-1002").
+- Be concise and factual. Do not repeat the raw context verbatim; synthesize an answer.
+
+Context:
+${contextBlocks}
+
+${historyBlock}Question: ${question}`;
+}
+
+export class RagService {
+  constructor(
+    private readonly searchService: SearchService = new SearchService(),
+    private readonly ollamaService: OllamaService = new OllamaService()
+  ) {}
+
+  async answer(input: RagAnswerInput): Promise<RagAnswer> {
+    const history = input.history ?? [];
+    const { results } = await this.searchService.search({
+      query: input.question,
+      topK: RETRIEVAL_TOP_K,
+    });
+
+    if (results.length === 0) {
+      return { answer: NO_CONTEXT_ANSWER, sources: [] };
+    }
+
+    const prompt = buildGroundedPrompt(input.question, history, results);
+    const answer = await this.ollamaService.chatCompletion(prompt);
+
+    return { answer, sources: results };
+  }
+}
