@@ -6,24 +6,34 @@ import { cosineSimilarity } from "@/utils/vector";
 
 const DEFAULT_TOP_K = 10;
 const MAX_TOP_K = 50;
-// Cosine similarity between unrelated text embeddings still lands ~0.3-0.45 (embedding
-// space anisotropy, not a real match) — 0 let every query return results regardless of
-// relevance. 0.45 is calibrated against real measurements: a nonsense query topped out
-// at 0.43 across all chunk types, while a genuinely relevant query's weakest reasonable
-// match started at 0.52.
-const DEFAULT_THRESHOLD = 0.45;
+// SigLIP2's text tower (short-caption-oriented, ~64 token limit) produces a much
+// higher and noisier baseline similarity than nomic-embed-text did — cosine similarity
+// between unrelated short text embeddings routinely lands in the 0.4-0.7 range rather
+// than 0.3-0.45 (stronger anisotropy for short strings). 0.73 is calibrated against
+// real measurements against re-indexed SigLIP2 data: two different nonsense queries
+// topped out at 0.45 and 0.70 across all chunk types (noise ceiling ~0.70), while a
+// genuinely relevant query's weakest reasonable match (a real line-item chunk, not one
+// of the near-content-free single-word tax-label chunks that score anomalously high
+// for any query) started at 0.78.
+const DEFAULT_THRESHOLD = 0.73;
 
 // A fixed floor alone isn't reliable: different nonsense queries land at different
-// points on the noise floor (measured 0.43 and 0.47 for two unrelated queries), just
+// points on the noise floor (measured 0.45 and 0.70 for two unrelated queries), just
 // above or below any single cutoff. What reliably differs is the SHAPE of the score
-// distribution: a real match has one (or a few) chunks standing clearly apart from the
-// rest (measured gap ~0.15 for a genuine match vs ~0.05-0.07 for two different nonsense
-// queries). MIN_SIGNAL_GAP requires that separation before trusting a borderline top
-// score. HIGH_CONFIDENCE_MARGIN skips the gap check entirely when the top score is
-// already well clear of the threshold — several chunks scoring uniformly high (e.g. a
-// broad query matching a whole invoice) is a legitimate result, not noise, and
-// shouldn't be vetoed just for lacking a single standout leader.
-const MIN_SIGNAL_GAP = 0.08;
+// distribution: a real match has its top score standing clearly apart from the mean of
+// all candidate scores (measured gap of top-score-minus-mean ~0.52 for a genuine match
+// vs ~0.23 and ~0.36 for two different nonsense queries). MIN_SIGNAL_GAP requires that
+// separation before trusting a borderline top score. HIGH_CONFIDENCE_MARGIN skips the
+// gap check entirely when the top score is already well clear of the threshold —
+// several chunks scoring uniformly high (e.g. a broad query matching a whole invoice)
+// is a legitimate result, not noise, and shouldn't be vetoed just for lacking a single
+// standout leader. Note: SigLIP2's short-text embedding space compresses scores into a
+// narrower, higher band than nomic-embed-text did, so the margin between threshold and
+// the observed genuine-match top score (~0.98) is wider in absolute terms than before;
+// this hasn't been validated against a live example of a borderline-but-real match
+// specifically in the gap-check band (threshold to threshold+margin), since the one
+// real match measured here scored well above that band.
+const MIN_SIGNAL_GAP = 0.4;
 const HIGH_CONFIDENCE_MARGIN = 0.15;
 const MIN_CANDIDATES_FOR_GAP_CHECK = 3;
 
