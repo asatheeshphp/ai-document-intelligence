@@ -25,10 +25,7 @@ export class DocumentIngestionService {
   constructor(
     private readonly repository: ProcessingRepository = new ProcessingRepository(),
     private readonly ollamaService: OllamaService = new OllamaService(),
-    private readonly indexingService: InvoiceIndexingService = new InvoiceIndexingService(
-      repository,
-      ollamaService
-    ),
+    private readonly indexingService: InvoiceIndexingService = new InvoiceIndexingService(repository),
     private readonly documentQualityService: DocumentQualityService = new DocumentQualityService(),
     private readonly visionExtractionService: VisionExtractionService = new VisionExtractionService(
       ollamaService

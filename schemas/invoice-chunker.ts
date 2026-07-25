@@ -45,34 +45,37 @@ function formatHeader(extraction: InvoiceExtraction): string | null {
   return lines.length > 0 ? lines.join("\n") : null;
 }
 
-function formatLineItems(items: InvoiceExtraction["lineItems"]): string | null {
+// Returns one string per line item (not one combined block) so each chunk stays short
+// enough for SigLIP2's limited text-embedding input length.
+function formatLineItems(items: InvoiceExtraction["lineItems"]): string[] {
   const meaningful = items.filter((item) => item.description || item.amount != null);
-  if (meaningful.length === 0) return null;
 
-  const lines = meaningful.map((item) => {
+  return meaningful.map((item) => {
     const parts: string[] = [item.description ?? "Item"];
     if (item.quantity != null) parts.push(`qty ${item.quantity}${item.unit ? ` ${item.unit}` : ""}`);
     if (item.unitPrice != null) parts.push(`unit price ${item.unitPrice}`);
     if (item.taxRate != null) parts.push(`tax rate ${item.taxRate}%`);
     if (item.amount != null) parts.push(`amount ${item.amount}`);
-    return `- ${parts.join(", ")}`;
+    return parts.join(", ");
   });
-
-  return `Line Items:\n${lines.join("\n")}`;
 }
 
-function formatTaxes(taxes: InvoiceExtraction["taxes"]): string | null {
+// One string per tax entry, same reasoning as formatLineItems.
+function formatTaxes(taxes: InvoiceExtraction["taxes"]): string[] {
   const meaningful = taxes.filter((tax) => tax.type || tax.rate != null || tax.amount != null);
-  if (meaningful.length === 0) return null;
 
-  const lines = meaningful.map((tax) => {
+  return meaningful.map((tax) => {
     const parts: string[] = [tax.type ?? "Tax"];
     if (tax.rate != null) parts.push(`rate ${tax.rate}%`);
     if (tax.amount != null) parts.push(`amount ${tax.amount}`);
-    return `- ${parts.join(", ")}`;
+    return parts.join(", ");
   });
+}
 
-  return `Taxes:\n${lines.join("\n")}`;
+// One string per reference, same reasoning as formatLineItems.
+function formatReferences(references: InvoiceExtraction["references"]): string[] {
+  const meaningful = references.filter((ref) => ref.type || ref.value);
+  return meaningful.map((ref) => `${ref.type ?? "Reference"}: ${ref.value ?? "N/A"}`);
 }
 
 function formatPayment(extraction: InvoiceExtraction): string | null {
@@ -101,19 +104,13 @@ function formatPayment(extraction: InvoiceExtraction): string | null {
   return lines.length > 0 ? lines.join("\n") : null;
 }
 
-function formatNotes(extraction: InvoiceExtraction): string | null {
-  const { notes, references, shipping } = extraction;
+// Notes text + shipping info only — these are bounded, fixed-field data, unlike
+// references (an open-ended array), which gets its own per-item chunks instead.
+function formatNotesAndShipping(extraction: InvoiceExtraction): string | null {
+  const { notes, shipping } = extraction;
   const lines: string[] = [];
 
   if (notes) lines.push(notes);
-
-  const meaningfulRefs = references.filter((ref) => ref.type || ref.value);
-  if (meaningfulRefs.length > 0) {
-    lines.push("References:");
-    for (const ref of meaningfulRefs) {
-      lines.push(`- ${ref.type ?? "Reference"}: ${ref.value ?? "N/A"}`);
-    }
-  }
 
   const shippingAddress = formatAddress(shipping.address);
   if (shippingAddress || shipping.method || shipping.trackingNumber) {
@@ -127,43 +124,53 @@ function formatNotes(extraction: InvoiceExtraction): string | null {
 }
 
 export function buildInvoiceChunks(extraction: InvoiceExtraction): InvoiceChunkDraft[] {
-  const sections: Array<{ type: ChunkType; text: string | null }> = [
-    { type: "header", text: formatHeader(extraction) },
-    { type: "supplier", text: formatParty("Supplier", extraction.supplier) },
-    { type: "customer", text: formatParty("Customer", extraction.customer) },
-    { type: "line_items", text: formatLineItems(extraction.lineItems) },
-    { type: "taxes", text: formatTaxes(extraction.taxes) },
-    { type: "payment", text: formatPayment(extraction) },
-    { type: "notes", text: formatNotes(extraction) },
-  ];
-
   const chunks: InvoiceChunkDraft[] = [];
   let offset = 0;
 
-  for (const section of sections) {
-    if (!section.text) continue;
-
+  const pushChunk = (type: ChunkType, text: string) => {
     const start = offset;
-    const end = start + section.text.length;
+    const end = start + text.length;
     chunks.push({
-      type: section.type,
-      text: section.text,
+      type,
+      text,
       start,
       end,
-      tokenCount: section.text.split(/\s+/).filter(Boolean).length,
+      tokenCount: text.split(/\s+/).filter(Boolean).length,
     });
     offset = end + 1;
+  };
+
+  const singleTextSections: Array<{ type: ChunkType; text: string | null }> = [
+    { type: "header", text: formatHeader(extraction) },
+    { type: "supplier", text: formatParty("Supplier", extraction.supplier) },
+    { type: "customer", text: formatParty("Customer", extraction.customer) },
+  ];
+
+  for (const section of singleTextSections) {
+    if (section.text) pushChunk(section.type, section.text);
+  }
+
+  for (const text of formatLineItems(extraction.lineItems)) {
+    pushChunk("line_items", text);
+  }
+
+  for (const text of formatTaxes(extraction.taxes)) {
+    pushChunk("taxes", text);
+  }
+
+  const payment = formatPayment(extraction);
+  if (payment) pushChunk("payment", payment);
+
+  const notesAndShipping = formatNotesAndShipping(extraction);
+  if (notesAndShipping) pushChunk("notes", notesAndShipping);
+
+  for (const text of formatReferences(extraction.references)) {
+    pushChunk("notes", text);
   }
 
   if (chunks.length === 0) {
     const fallbackText = JSON.stringify(extraction);
-    chunks.push({
-      type: "other",
-      text: fallbackText,
-      start: 0,
-      end: fallbackText.length,
-      tokenCount: fallbackText.split(/\s+/).filter(Boolean).length,
-    });
+    pushChunk("other", fallbackText);
   }
 
   return chunks;

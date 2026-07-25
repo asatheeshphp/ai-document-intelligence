@@ -9,6 +9,7 @@ const schema = z.object({
   OLLAMA_EMBED_MODEL: z.string(),
   OLLAMA_VISION_MODEL: z.string().default("qwen2.5vl:7b"),
   DOCUMENT_QUALITY_THRESHOLD: z.coerce.number().min(0).max(1).default(0.5),
+  SIGLIP_SERVICE_URL: z.string().default("http://127.0.0.1:8000"),
 });
 
 export const env = schema.parse(process.env);

@@ -1,29 +1,80 @@
 import type { Types } from "mongoose";
 import { ProcessingRepository } from "@/repositories/processing.repository";
 import { VectorRepository } from "@/repositories/vector.repository";
-import { OllamaService } from "@/services/ollama.service";
+import { SiglipService } from "@/services/siglip.service";
 import { cosineSimilarity } from "@/utils/vector";
 
 const DEFAULT_TOP_K = 10;
 const MAX_TOP_K = 50;
-// Cosine similarity between unrelated text embeddings still lands ~0.3-0.45 (embedding
-// space anisotropy, not a real match) — 0 let every query return results regardless of
-// relevance. 0.45 is calibrated against real measurements: a nonsense query topped out
-// at 0.43 across all chunk types, while a genuinely relevant query's weakest reasonable
-// match started at 0.52.
-const DEFAULT_THRESHOLD = 0.45;
+// ---------------------------------------------------------------------------------
+// RE-CALIBRATION NOTE (2026-07-25, Task 7 end-to-end verification):
+//
+// Task 6's thresholds (0.73 / 0.4 gap / 0.15 margin) were calibrated against a corpus
+// of 1-2 invoices. Once the corpus grew to 8 invoices / 113 chunks, MIN_SIGNAL_GAP=0.4
+// caused /api/search to return ZERO results for genuinely correct matches, including
+// every multilingual query tested — the exact bug this migration exists to fix.
+//
+// Re-measuring against the larger corpus (queries run via the real SigLIP2 sidecar
+// against all 113 indexed chunks across 8 invoices — ABC Technologies, GreenLeaf,
+// Zenith Trading, ABC Exports, two Express Cargo & Logistics invoices, Medicare Pharma,
+// CloudNova Software) surfaced something worse than a mistuned constant: at this scale
+// SigLIP2's short-text tower does not reliably separate relevant from irrelevant
+// content at all, in either the raw score or the top-vs-mean gap.
+//
+// Measured top-score-minus-mean gaps (over all 113 candidates):
+//   English vendor-name query, gap only (English, exact vendor name in query): 0.0343 - 0.0732
+//     ** IMPORTANT: gap value alone is misleading here. In all 4 English vendor-name
+//     ** queries tested, the top-ranked chunk did NOT belong to the target invoice —
+//     ** e.g. querying "CloudNova" returned Medicare's chunk as #1 (CloudNova was #8),
+//     ** and querying "Medicare" returned CloudNova's chunk as #1. Top-1 ranking
+//     ** accuracy for plain English queries is currently unreliable and is a SEPARATE,
+//     ** UNRESOLVED problem from the threshold/gap values below — this recalibration
+//     ** does not fix it, only the multilingual zero-results bug it was tasked with.
+//   genuine multilingual match (Spanish query -> CloudNova invoice, correct top-1):  0.0296
+//   genuine multilingual match (Hindi query -> Medicare invoice, correct top-1):     0.0283
+//   nonsense query 1 ("recipe for chocolate lava cake dessert"):          0.0268
+//   nonsense query 2 ("quantum physics of black holes..."):               0.0307
+// Sorted: nonsense1 (0.0268) < Hindi-genuine (0.0283) < Spanish-genuine (0.0296) <
+// nonsense2 (0.0307). The genuine and nonsense gap values are *interleaved* — no
+// single MIN_SIGNAL_GAP cutoff can separate them, because the underlying distributions
+// overlap, not because the wrong number was picked.
+//
+// The same is true of raw top scores: nonsense2 topped out at 0.8006, while the Hindi
+// multilingual genuine match topped out at only 0.7889 — LOWER than a nonsense query.
+// A literal invoice number ("CNS-2026-501") and a verbatim line-item string ("AI
+// Platform License") used as queries did not even rank their own source chunk in the
+// top 5 of all 113 candidates; unrelated chunks scored higher (0.996 vs an exact
+// verbatim match). This indicates SigLIP2's text tower is producing near-degenerate,
+// highly anisotropic embeddings for this kind of short, structurally-similar,
+// template-heavy invoice text (e.g. "Customer: X Address: Y", repeated tax-label
+// chunks like "CGST"/"SGST" that are byte-identical across invoices) — there just
+// isn't much usable signal magnitude to threshold on, independent of what threshold
+// value is chosen.
+//
+// Given that, DEFAULT_THRESHOLD and MIN_SIGNAL_GAP below are a best-effort compromise,
+// not a clean fix: they are set to avoid rejecting the weakest genuine match actually
+// measured (Hindi multilingual, top score 0.7889, gap 0.0283) since a silent
+// zero-result response for a correct match was the specific, worse failure mode this
+// recalibration was tasked with fixing. The cost is that nonsense queries whose noise
+// ceiling happens to land above ~0.78 (measured nonsense2 example: 0.8006) will still
+// return spurious low-quality results. This is a known, accepted limitation of the
+// current approach — genuinely fixing nonsense-rejection would require either a
+// different embedding model with less anisotropy for short/structured text, a hybrid
+// keyword+vector pre-filter, or de-duplicating the boilerplate/template chunks that
+// are polluting the score distribution — none of which are in scope for a
+// threshold-only recalibration.
+const DEFAULT_THRESHOLD = 0.78;
 
-// A fixed floor alone isn't reliable: different nonsense queries land at different
-// points on the noise floor (measured 0.43 and 0.47 for two unrelated queries), just
-// above or below any single cutoff. What reliably differs is the SHAPE of the score
-// distribution: a real match has one (or a few) chunks standing clearly apart from the
-// rest (measured gap ~0.15 for a genuine match vs ~0.05-0.07 for two different nonsense
-// queries). MIN_SIGNAL_GAP requires that separation before trusting a borderline top
-// score. HIGH_CONFIDENCE_MARGIN skips the gap check entirely when the top score is
-// already well clear of the threshold — several chunks scoring uniformly high (e.g. a
-// broad query matching a whole invoice) is a legitimate result, not noise, and
-// shouldn't be vetoed just for lacking a single standout leader.
-const MIN_SIGNAL_GAP = 0.08;
+// See note above: at this corpus size the gap between a genuine top score and the
+// mean of all 113 candidates is small (0.028 - 0.073) and overlaps with the gap
+// produced by nonsense queries (0.027 - 0.031). MIN_SIGNAL_GAP is set just below the
+// lowest measured genuine-match gap (Hindi multilingual, 0.0283) so it does not reject
+// real cross-document/multilingual matches; it will not reliably reject nonsense
+// queries whose gap also falls in this band (e.g. nonsense2 measured 0.0307, which
+// would have passed a gap check set anywhere below that value). HIGH_CONFIDENCE_MARGIN
+// is unchanged — when the top score already clears threshold+margin the gap check is
+// skipped, matching the several-chunks-score-uniformly-high case described in Task 6.
+const MIN_SIGNAL_GAP = 0.025;
 const HIGH_CONFIDENCE_MARGIN = 0.15;
 const MIN_CANDIDATES_FOR_GAP_CHECK = 3;
 
@@ -67,7 +118,7 @@ export class SearchService {
   constructor(
     private readonly repository: ProcessingRepository = new ProcessingRepository(),
     private readonly vectorRepository: VectorRepository = new VectorRepository(),
-    private readonly ollamaService: OllamaService = new OllamaService()
+    private readonly siglipService: SiglipService = new SiglipService()
   ) {}
 
   async search(input: SearchInput): Promise<SearchOutput> {
@@ -75,7 +126,7 @@ export class SearchService {
     const threshold = input.threshold ?? DEFAULT_THRESHOLD;
     const filters = input.filters;
 
-    const queryVector = await this.ollamaService.embedText(input.query);
+    const queryVector = await this.siglipService.embedText(input.query);
 
     let invoiceIdFilter: Types.ObjectId[] | null = null;
 
