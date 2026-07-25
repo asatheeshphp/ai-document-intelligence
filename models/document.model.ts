@@ -9,12 +9,20 @@ export type DocumentStatus =
   | "OCR_COMPLETE"
   | "FAILED";
 
-export type DocumentType = "INVOICE" | "RECEIPT" | "UNKNOWN";
+export type DocumentType =
+  | "INVOICE"
+  | "RECEIPT"
+  | "PURCHASE_ORDER"
+  | "CONTRACT"
+  | "RESUME"
+  | "OTHER"
+  | "UNKNOWN";
 
 export interface IDocument extends mongoose.Document {
   _id: Types.ObjectId;
   emailId: Types.ObjectId;
   documentType: DocumentType;
+  classificationConfidence?: number;
   filename?: string;
   contentType?: string;
   fileSize?: number;
@@ -35,10 +43,11 @@ const DocumentSchema = new Schema<IDocument>(
     emailId: { type: Schema.Types.ObjectId, ref: "Email", required: true, index: true },
     documentType: {
       type: String,
-      enum: ["INVOICE", "RECEIPT", "UNKNOWN"],
+      enum: ["INVOICE", "RECEIPT", "PURCHASE_ORDER", "CONTRACT", "RESUME", "OTHER", "UNKNOWN"],
       default: "UNKNOWN",
       index: true,
     },
+    classificationConfidence: { type: Number },
     filename: { type: String },
     contentType: { type: String },
     fileSize: { type: Number },
