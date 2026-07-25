@@ -4,7 +4,10 @@ import type { Types } from "mongoose";
 import { env } from "@/config/env";
 import { ProcessingRepository } from "@/repositories/processing.repository";
 import { OllamaService } from "@/services/ollama.service";
-import { OcrService } from "@/services/ocr.service";
+import { DocumentQualityService } from "@/services/document-quality.service";
+import { VisionExtractionService } from "@/services/vision-extraction.service";
+import { DocumentClassifierService } from "@/services/document-classifier.service";
+import type { DocumentClassification } from "@/schemas/document-classification.schema";
 import { extractPdfText } from "@/utils/pdf-text-extractor";
 import { mapInvoiceExtractionToInvoiceFields } from "@/schemas/invoice-mapper";
 import { InvoiceIndexingService } from "@/services/invoice-indexing.service";
@@ -24,6 +27,13 @@ export class DocumentIngestionService {
     private readonly ollamaService: OllamaService = new OllamaService(),
     private readonly indexingService: InvoiceIndexingService = new InvoiceIndexingService(
       repository,
+      ollamaService
+    ),
+    private readonly documentQualityService: DocumentQualityService = new DocumentQualityService(),
+    private readonly visionExtractionService: VisionExtractionService = new VisionExtractionService(
+      ollamaService
+    ),
+    private readonly documentClassifierService: DocumentClassifierService = new DocumentClassifierService(
       ollamaService
     )
   ) {}
@@ -111,22 +121,23 @@ export class DocumentIngestionService {
     }
 
     let ocrSucceeded = false;
-    let ocrAvailable = false;
 
-    // If extracted text is too short, attempt OCR fallback
-    if (text.trim().length < 200) {
-      const ocr = new OcrService();
+    const initialQuality = this.documentQualityService.assess(text, numPages ?? 1);
+
+    if (initialQuality.score < env.DOCUMENT_QUALITY_THRESHOLD) {
       try {
-        const ocrText = await ocr.ocrPdf(absolutePath);
-        ocrAvailable = true;
-        if (ocrText && ocrText.trim().length > text.trim().length) {
-          text = ocrText;
+        const recoveredText = await this.visionExtractionService.extractText(fileBuffer);
+        const recoveredQuality = this.documentQualityService.assess(recoveredText, numPages ?? 1);
+
+        if (recoveredText && recoveredQuality.score > initialQuality.score) {
+          text = recoveredText;
           ocrSucceeded = true;
         }
       } catch (err) {
-        // log and continue with whatever text we have; if OCR is unavailable then mark document for OCR later
-        // eslint-disable-next-line no-console
-        console.warn("OCR fallback failed:", err instanceof Error ? err.message : err);
+        console.warn(
+          "Vision-based text recovery failed:",
+          err instanceof Error ? err.message : err
+        );
       }
     }
 
@@ -146,9 +157,12 @@ export class DocumentIngestionService {
       metadata: { sourcePath: absolutePath, ...(input.metadata ?? {}) },
     });
 
-    if (text.trim().length < 200 && !ocrSucceeded) {
+    const finalQuality = this.documentQualityService.assess(text, numPages ?? 1);
+
+    if (finalQuality.score < env.DOCUMENT_QUALITY_THRESHOLD && !ocrSucceeded) {
       await this.repository.updateDocumentStatus(document._id, "OCR_REQUIRED", {
-        lastError: "OCR is required for this document. Install OCR tooling or use a text-searchable PDF.",
+        lastError:
+          "Document quality is too low for extraction. Install a working vision model or use a clearer scan.",
       });
 
       return {
@@ -156,7 +170,27 @@ export class DocumentIngestionService {
         document,
         extraction: null,
         invoice: null,
-        message: "OCR is required for this document.",
+        classification: null as DocumentClassification | null,
+        message: "Document quality is too low for reliable extraction.",
+      };
+    }
+
+    const classification = await this.documentClassifierService.classify(text);
+
+    await this.repository.updateDocumentStatus(document._id, "EXTRACTED", {
+      extractedText: text,
+      documentType: classification.documentType,
+      classificationConfidence: classification.confidence,
+    });
+
+    if (classification.documentType !== "INVOICE") {
+      return {
+        email,
+        document,
+        extraction: null,
+        invoice: null,
+        classification,
+        message: `Document classified as ${classification.documentType}. Structured extraction is not yet supported for this document type.`,
       };
     }
 
@@ -173,16 +207,13 @@ export class DocumentIngestionService {
       metadata: { source: "local-folder" },
     });
 
-    await this.repository.updateDocumentStatus(document._id, "EXTRACTED", {
-      extractedText: text,
-    });
-
     if (!extractionOutcome.success || !extractionOutcome.data) {
       return {
         email,
         document,
         extraction,
         invoice: null,
+        classification,
         message: "AI extraction failed. The raw model response was preserved on the extraction record for review.",
       };
     }
@@ -206,6 +237,7 @@ export class DocumentIngestionService {
       document,
       extraction,
       invoice,
+      classification,
     };
   }
 
@@ -219,6 +251,7 @@ export class DocumentIngestionService {
     document: IDocument | null;
     extraction: IExtraction | null;
     invoice: IInvoice | null;
+    classification?: DocumentClassification | null;
     error?: string;
   }> {
     const document = await this.repository.findDocumentById(documentId);
@@ -227,6 +260,25 @@ export class DocumentIngestionService {
     }
 
     const textToExtract = document.extractedText ?? "Invoice details are unavailable.";
+
+    const classification = await this.documentClassifierService.classify(textToExtract);
+
+    await this.repository.updateDocumentStatus(document._id, "EXTRACTED", {
+      documentType: classification.documentType,
+      classificationConfidence: classification.confidence,
+    });
+
+    if (classification.documentType !== "INVOICE") {
+      return {
+        success: false,
+        document,
+        extraction: null,
+        invoice: null,
+        classification,
+        error: `Document classified as ${classification.documentType}. Structured extraction is not yet supported for this document type.`,
+      };
+    }
+
     const outcome = await this.ollamaService.extractInvoiceData(textToExtract);
 
     const extraction = await this.repository.createExtraction({
@@ -250,6 +302,7 @@ export class DocumentIngestionService {
         document,
         extraction,
         invoice: null,
+        classification,
         error: outcome.error ?? "AI extraction failed",
       };
     }
@@ -267,6 +320,7 @@ export class DocumentIngestionService {
         document,
         extraction,
         invoice: null,
+        classification,
         error: "Failed to upsert invoice record.",
       };
     }
@@ -275,6 +329,6 @@ export class DocumentIngestionService {
       source: "reindex",
     });
 
-    return { success: true, document, extraction, invoice };
+    return { success: true, document, extraction, invoice, classification };
   }
 }
