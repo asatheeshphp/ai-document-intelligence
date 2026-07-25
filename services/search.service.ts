@@ -1,7 +1,7 @@
 import type { Types } from "mongoose";
 import { ProcessingRepository } from "@/repositories/processing.repository";
 import { VectorRepository } from "@/repositories/vector.repository";
-import { OllamaService } from "@/services/ollama.service";
+import { SiglipService } from "@/services/siglip.service";
 import { cosineSimilarity } from "@/utils/vector";
 
 const DEFAULT_TOP_K = 10;
@@ -67,7 +67,7 @@ export class SearchService {
   constructor(
     private readonly repository: ProcessingRepository = new ProcessingRepository(),
     private readonly vectorRepository: VectorRepository = new VectorRepository(),
-    private readonly ollamaService: OllamaService = new OllamaService()
+    private readonly siglipService: SiglipService = new SiglipService()
   ) {}
 
   async search(input: SearchInput): Promise<SearchOutput> {
@@ -75,7 +75,7 @@ export class SearchService {
     const threshold = input.threshold ?? DEFAULT_THRESHOLD;
     const filters = input.filters;
 
-    const queryVector = await this.ollamaService.embedText(input.query);
+    const queryVector = await this.siglipService.embedText(input.query);
 
     let invoiceIdFilter: Types.ObjectId[] | null = null;
 

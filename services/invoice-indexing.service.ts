@@ -1,14 +1,13 @@
 import type { Types } from "mongoose";
-import { env } from "@/config/env";
 import { ProcessingRepository } from "@/repositories/processing.repository";
-import { OllamaService } from "@/services/ollama.service";
+import { SiglipService } from "@/services/siglip.service";
 import { buildInvoiceChunks } from "@/schemas/invoice-chunker";
 import type { InvoiceExtraction } from "@/schemas/invoice.schema";
 
 export class InvoiceIndexingService {
   constructor(
     private readonly repository: ProcessingRepository = new ProcessingRepository(),
-    private readonly ollamaService: OllamaService = new OllamaService()
+    private readonly siglipService: SiglipService = new SiglipService()
   ) {}
 
   /**
@@ -28,7 +27,7 @@ export class InvoiceIndexingService {
 
     const vectors: number[][] = [];
     for (const draft of drafts) {
-      vectors.push(await this.ollamaService.embedText(draft.text));
+      vectors.push(await this.siglipService.embedText(draft.text));
     }
 
     await this.repository.deleteChunksByDocumentId(documentId);
@@ -54,7 +53,7 @@ export class InvoiceIndexingService {
         documentId,
         chunkId: chunkDoc._id,
         chunkType: draft.type,
-        embeddingModel: env.OLLAMA_EMBED_MODEL,
+        embeddingModel: "siglip2",
         embeddingVector: vector,
         status: "COMPLETED",
         metadata,
