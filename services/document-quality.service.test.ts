@@ -13,7 +13,20 @@ describe("DocumentQualityService", () => {
     const garbled = "%#@!&*^%$#@!&*^%$#@!&*^%$#@!&*^%$#@!&*^%$#@!&*^%$#@!&*^%$".repeat(9);
     expect(garbled.length).toBeGreaterThan(500);
     const result = service.assess(garbled, 1);
-    expect(result.score).toBeLessThan(0.45);
+    expect(result.score).toBeLessThan(0.42);
+  });
+
+  it("does not treat punctuation/currency-symbol-only tokens with no letters or digits as recognizable", () => {
+    const result = service.assess("$--,, $.... $///", 1);
+    expect(result.signals.recognizableWordRatio).toBe(0);
+  });
+
+  it("scores a page-length currency-symbol-garbled sample low, not falsely high from punctuation matches", () => {
+    const currencyGarbled = "$--,, $.... $/// ".repeat(30);
+    expect(currencyGarbled.length).toBeGreaterThan(500);
+    const result = service.assess(currencyGarbled, 1);
+    expect(result.signals.recognizableWordRatio).toBe(0);
+    expect(result.score).toBeLessThan(0.42);
   });
 
   it("scores clean, readable invoice-like text highly", () => {
