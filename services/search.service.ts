@@ -22,9 +22,16 @@ const MAX_TOP_K = 50;
 // content at all, in either the raw score or the top-vs-mean gap.
 //
 // Measured top-score-minus-mean gaps (over all 113 candidates):
-//   genuine invoice-specific match (English, exact vendor name in query): 0.0343 - 0.0732
-//   genuine multilingual match (Spanish query -> CloudNova invoice):      0.0296
-//   genuine multilingual match (Hindi query -> Medicare invoice):        0.0283
+//   English vendor-name query, gap only (English, exact vendor name in query): 0.0343 - 0.0732
+//     ** IMPORTANT: gap value alone is misleading here. In all 4 English vendor-name
+//     ** queries tested, the top-ranked chunk did NOT belong to the target invoice —
+//     ** e.g. querying "CloudNova" returned Medicare's chunk as #1 (CloudNova was #8),
+//     ** and querying "Medicare" returned CloudNova's chunk as #1. Top-1 ranking
+//     ** accuracy for plain English queries is currently unreliable and is a SEPARATE,
+//     ** UNRESOLVED problem from the threshold/gap values below — this recalibration
+//     ** does not fix it, only the multilingual zero-results bug it was tasked with.
+//   genuine multilingual match (Spanish query -> CloudNova invoice, correct top-1):  0.0296
+//   genuine multilingual match (Hindi query -> Medicare invoice, correct top-1):     0.0283
 //   nonsense query 1 ("recipe for chocolate lava cake dessert"):          0.0268
 //   nonsense query 2 ("quantum physics of black holes..."):               0.0307
 // Sorted: nonsense1 (0.0268) < Hindi-genuine (0.0283) < Spanish-genuine (0.0296) <
