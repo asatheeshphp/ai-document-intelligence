@@ -3,6 +3,7 @@ import { ProcessingRepository } from "@/repositories/processing.repository";
 import { VectorRepository } from "@/repositories/vector.repository";
 import { SiglipService } from "@/services/siglip.service";
 import { cosineSimilarity } from "@/utils/vector";
+import { lexicalOverlapScore } from "@/utils/lexical-score";
 
 const DEFAULT_TOP_K = 10;
 const MAX_TOP_K = 50;
@@ -27,9 +28,11 @@ const MAX_TOP_K = 50;
 //     ** queries tested, the top-ranked chunk did NOT belong to the target invoice —
 //     ** e.g. querying "CloudNova" returned Medicare's chunk as #1 (CloudNova was #8),
 //     ** and querying "Medicare" returned CloudNova's chunk as #1. Top-1 ranking
-//     ** accuracy for plain English queries is currently unreliable and is a SEPARATE,
-//     ** UNRESOLVED problem from the threshold/gap values below — this recalibration
-//     ** does not fix it, only the multilingual zero-results bug it was tasked with.
+//     ** accuracy for plain English queries was unreliable and was a SEPARATE problem
+//     ** from the threshold/gap values below — this recalibration did not fix it, only
+//     ** the multilingual zero-results bug it was tasked with. It is now addressed
+//     ** separately by LEXICAL_BOOST below (added 2026-07-27) — see that constant's
+//     ** comment for how.
 //   genuine multilingual match (Spanish query -> CloudNova invoice, correct top-1):  0.0296
 //   genuine multilingual match (Hindi query -> Medicare invoice, correct top-1):     0.0283
 //   nonsense query 1 ("recipe for chocolate lava cake dessert"):          0.0268
@@ -77,6 +80,18 @@ const DEFAULT_THRESHOLD = 0.78;
 const MIN_SIGNAL_GAP = 0.025;
 const HIGH_CONFIDENCE_MARGIN = 0.15;
 const MIN_CANDIDATES_FOR_GAP_CHECK = 3;
+
+// FIX (2026-07-27): the top-1 English ranking bug documented above — "CloudNova" ranking
+// Medicare's chunk #1, a verbatim invoice number not ranking its own chunk in the top 5 —
+// is a lexical-matching gap, not a mistuned threshold: SigLIP2's text tower wasn't trained
+// to separate short, structurally-similar, template-heavy invoice text on exact keyword
+// overlap. LEXICAL_BOOST adds a literal-overlap score (see utils/lexical-score.ts) on top
+// of cosine similarity so a verbatim vendor name / invoice number / line item decisively
+// outranks noise regardless of vector-space anisotropy. It's additive and zero for queries
+// with no literal overlap, so multilingual and nonsense-query behavior (calibrated above)
+// is unaffected — this only changes ranking when the query's own words actually appear in
+// the candidate chunk.
+const LEXICAL_BOOST = 0.5;
 
 export interface SearchFilters {
   vendorName?: string;
@@ -166,10 +181,25 @@ export class SearchService {
       candidates = candidates.filter((embedding) => embedding.chunkType === filters.chunkType);
     }
 
-    const allScored = candidates.map((embedding) => ({
-      embedding,
-      score: cosineSimilarity(queryVector, embedding.embeddingVector),
-    }));
+    // Chunk text is needed for every candidate (not just the final topK) so the lexical
+    // boost below can affect ranking, not just re-order results that already passed a
+    // vector-only cut.
+    const candidateChunkIds = candidates
+      .map((embedding) => embedding.chunkId)
+      .filter((id): id is Types.ObjectId => Boolean(id));
+
+    const candidateChunks =
+      candidateChunkIds.length > 0 ? await this.repository.findChunksByIds(candidateChunkIds) : [];
+
+    const chunkById = new Map(candidateChunks.map((chunk) => [chunk._id.toString(), chunk]));
+
+    const allScored = candidates.map((embedding) => {
+      const vectorScore = cosineSimilarity(queryVector, embedding.embeddingVector);
+      const chunkText = embedding.chunkId ? chunkById.get(embedding.chunkId.toString())?.text ?? "" : "";
+      const lexicalScore = lexicalOverlapScore(input.query, chunkText);
+
+      return { embedding, score: vectorScore + LEXICAL_BOOST * lexicalScore };
+    });
 
     if (allScored.length === 0) {
       return { results: [], queryVectorDimension: queryVector.length };
@@ -192,17 +222,8 @@ export class SearchService {
       .slice(0, topK);
 
     const invoiceIds = Array.from(new Set(scored.map((item) => item.embedding.invoiceId.toString())));
-    const chunkIds = scored
-      .map((item) => item.embedding.chunkId)
-      .filter((id): id is Types.ObjectId => Boolean(id));
-
-    const [invoices, chunks] = await Promise.all([
-      this.repository.findInvoicesByIds(invoiceIds),
-      chunkIds.length > 0 ? this.repository.findChunksByIds(chunkIds) : Promise.resolve([]),
-    ]);
-
+    const invoices = await this.repository.findInvoicesByIds(invoiceIds);
     const invoiceById = new Map(invoices.map((invoice) => [invoice._id.toString(), invoice]));
-    const chunkById = new Map(chunks.map((chunk) => [chunk._id.toString(), chunk]));
 
     const results: SearchResultItem[] = scored.map((item) => {
       const invoice = invoiceById.get(item.embedding.invoiceId.toString()) ?? null;
