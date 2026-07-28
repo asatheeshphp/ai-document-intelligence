@@ -11,6 +11,24 @@ function tokenize(text: string): string[] {
   );
 }
 
+// Plain substring inclusion missed a real case: query "keyboards" against chunk text
+// "Logitech Keyboard x10" silently scored 0, because "keyboards" isn't a literal
+// substring of "keyboard x10" — a simple singular/plural mismatch defeated the boost
+// entirely. Only this direction needs handling: a regular plural always already
+// contains its singular as a substring (e.g. "keyboards" contains "keyboard"), so a
+// singular query token matching plural text works without any extra step. This only
+// covers the common regular "-s" case, not irregular plurals like "company"/"companies"
+// — enough to fix the reported failure without overreaching into real stemming.
+function tokenMatchesText(token: string, normalizedText: string): boolean {
+  if (normalizedText.includes(token)) return true;
+
+  if (token.endsWith("s") && token.length > 3) {
+    return normalizedText.includes(token.slice(0, -1));
+  }
+
+  return false;
+}
+
 /**
  * Scores how much of `query`'s literal content appears in `text`, case-insensitively.
  * 1 for a verbatim substring match (e.g. an invoice number or exact vendor name), otherwise
@@ -32,6 +50,6 @@ export function lexicalOverlapScore(query: string, text: string): number {
   const queryTokens = tokenize(query);
   if (queryTokens.length === 0) return 0;
 
-  const matchedTokens = queryTokens.filter((token) => normalizedText.includes(token));
+  const matchedTokens = queryTokens.filter((token) => tokenMatchesText(token, normalizedText));
   return matchedTokens.length / queryTokens.length;
 }

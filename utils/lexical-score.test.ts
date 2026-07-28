@@ -22,4 +22,21 @@ describe("lexicalOverlapScore", () => {
   it("ignores stopwords when computing token overlap", () => {
     expect(lexicalOverlapScore("show me the CloudNova invoice", "Supplier: CloudNova Software")).toBe(1);
   });
+
+  it("matches a plural query token against a singular occurrence in the text", () => {
+    // Reproduces the reported bug: "keyboards" (query) didn't match "Keyboard x10"
+    // (chunk text) via plain substring inclusion, silently zeroing the boost.
+    expect(lexicalOverlapScore("laptops and keyboards", "Logitech Keyboard x10, qty 10")).toBeCloseTo(1 / 2);
+  });
+
+  it("still matches a singular query token against a plural occurrence in the text", () => {
+    // This direction never needed the plural-stripping fallback: a regular plural
+    // always already contains its singular as a substring ("keyboards" contains
+    // "keyboard"), so plain substring inclusion handles it on its own.
+    expect(lexicalOverlapScore("find the keyboard", "Logitech Keyboards x10, qty 10")).toBe(1);
+  });
+
+  it("does not treat unrelated words that happen to end in s as a match", () => {
+    expect(lexicalOverlapScore("status of the shipment", "Supplier: CloudNova Software")).toBe(0);
+  });
 });
