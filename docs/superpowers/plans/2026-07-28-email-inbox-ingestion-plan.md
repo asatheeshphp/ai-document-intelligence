@@ -146,6 +146,24 @@ build speculatively now.
       `check-inbox` endpoint, following the same structure as the existing E5-sidecar/
       Ollama sections.
 
+### Task 9: Optional subject filter — added after initial build, per explicit request
+
+**Files:** `config/email-env.ts`, `services/email-ingestion.service.ts`, both test files,
+`.env.local.example`, `README.md`, spec doc
+
+- [x] Add `EMAIL_SUBJECT_FILTER` (optional, no default — unset preserves the original
+      "every unread message with a matching attachment is a candidate" behavior).
+      Commit `e6e0cd5`.
+- [x] A message whose subject doesn't contain the filter (case-insensitive substring,
+      anywhere — not a prefix match) is marked read and skipped, same treatment as a
+      message with no matching attachment.
+- [x] Unit tests: filter unset (unchanged behavior, covered by Task 5's existing tests);
+      subject doesn't match (skipped, not recorded); subject matches case-insensitively
+      anywhere in the string (processed normally).
+- [x] `.env.local.example`, `README.md` step 8, and the design doc's Task 1/out-of-scope
+      sections updated to document the new var and reflect that subject filtering is now
+      in scope (previously explicitly deferred).
+
 ---
 
 ## Out of scope for this plan (explicit)
@@ -153,5 +171,5 @@ build speculatively now.
 - Microsoft Graph API / OAuth (only if Task 7 proves IMAP blocked)
 - Scheduled/background polling
 - Attachment types beyond PDF/image
-- Sender/subject filtering
+- Sender filtering (subject filtering is now in scope — see Task 9)
 - Any mailbox write operation beyond marking a message `\Seen`
