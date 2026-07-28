@@ -171,10 +171,13 @@ curl -X POST http://localhost:3000/api/email/check-inbox
 ```
 
 Response shape: `{ success, emailsScanned, emailsWithAttachments, documentsIngested,
-errors }`. Only unread messages with a PDF or image attachment are downloaded; everything
-else is left untouched. A message is marked read once its attachments are safely
-downloaded — re-running the endpoint with no new unread mail returns a clean
-"0 scanned" result rather than re-processing anything.
+errors }`. **Each call processes at most one message** — the oldest unread message
+(lowest UID), whatever it is, even if it turns out to have no matching attachment or
+fails the subject filter. `emailsScanned` is therefore always `0` or `1`, never a batch
+count. Call the endpoint repeatedly (e.g. in a loop, or manually) to work through
+several unread messages one at a time. A message is marked read once its attachments are
+safely downloaded (or immediately, if it didn't qualify) — re-running the endpoint with
+no unread mail left returns a clean "0 scanned" result.
 
 ## Troubleshooting
 

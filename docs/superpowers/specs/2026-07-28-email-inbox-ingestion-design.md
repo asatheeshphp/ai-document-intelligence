@@ -39,10 +39,15 @@ export class EmailIngestionService {
 
 - Connects via IMAP (library: `imapflow` — modern, promise-based, actively maintained;
   `mailparser` to parse fetched messages into headers + attachments).
-- Searches the configured mailbox folder for **unread (`UNSEEN`)** messages only — matches
-  the original flow's "read unread emails," and naturally avoids reprocessing the same
-  message on every manual trigger once it's marked read.
-- For each unread message:
+- Searches the configured mailbox folder for **unread (`UNSEEN`)** messages, then takes
+  only the **single oldest one (lowest UID)** — added after initial build, per explicit
+  request. One `checkInbox()` call processes at most one message, whatever it is, even if
+  it doesn't qualify (wrong subject, no matching attachment) — it is not "keep scanning
+  oldest-first until something qualifies." The rest of the unread messages are left
+  untouched (still unread) and picked up on subsequent calls, one at a time. This
+  naturally avoids reprocessing the same message on every manual trigger once it's marked
+  read, and keeps each trigger call's work bounded and predictable.
+- For the one message picked:
   - If `EMAIL_SUBJECT_FILTER` is set, only messages whose subject contains it
     (case-insensitive substring match, not a prefix) are considered — added after initial
     build, per explicit request, once real usage showed every unread message being a
@@ -73,9 +78,9 @@ export class EmailIngestionService {
     `Email.status`/`lastError` fields (already on the model) carry extraction-level
     failure, which is retryable independently via the same mechanism
     `reextractDocument` already uses for local-file documents.
-  - Any per-message failure (parse error, attachment write failure) is caught and recorded
-    on that message's `Email` record (`status: "FAILED"`, `lastError`) — one bad message
-    must not abort the whole inbox check.
+  - Any failure processing that message (parse error, attachment write failure) is caught
+    and returned in the result's `errors` array rather than throwing out of
+    `checkInbox()` — a bad message on the failing path is recorded, not a crash.
 
 ### 2. `app/api/email/check-inbox/route.ts` — new manual-trigger endpoint
 
@@ -156,4 +161,7 @@ No changes to `models/email.model.ts` — the existing schema already fits.
 4. Confirm calling the endpoint a second time with no new unread mail returns a clean
    "0 new emails" result rather than reprocessing the same message.
 5. Confirm a non-PDF/image attachment (e.g. a `.docx`) on a test email is correctly
-   ignored without being downloaded or erroring the whole batch.
+   ignored without downloading it or erroring the call.
+6. With two unread test emails present, confirm one `checkInbox()` call processes only
+   the older one (by UID) and leaves the newer one unread; a second call then picks up
+   the newer one.

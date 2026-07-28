@@ -162,25 +162,41 @@ describe("EmailIngestionService.checkInbox", () => {
     expect(documentIngestionService.processLocalDocument).toHaveBeenCalledTimes(1);
   });
 
-  it("records a per-message failure without aborting the rest of the batch", async () => {
+  it("records a failure on the processed message without throwing", async () => {
     const client = fakeImapClient({
-      search: vi.fn().mockResolvedValue([501, 502]),
-      fetchOne: vi
-        .fn()
-        .mockRejectedValueOnce(new Error("IMAP fetch failed"))
-        .mockResolvedValueOnce({ source: Buffer.from("raw-mime") }),
+      search: vi.fn().mockResolvedValue([501]),
+      fetchOne: vi.fn().mockRejectedValue(new Error("IMAP fetch failed")),
+    });
+    const repository = fakeRepository();
+    const documentIngestionService = fakeDocumentIngestionService();
+
+    const service = new EmailIngestionService(repository, documentIngestionService, () => client);
+    const result = await service.checkInbox();
+
+    expect(result.errors).toEqual([{ messageUid: 501, error: "IMAP fetch failed" }]);
+    expect(result.documentsIngested).toBe(0);
+  });
+
+  it("processes only the oldest unread message (ascending UID), even when search returns others out of order", async () => {
+    const fetchOne = vi.fn().mockResolvedValue({ source: Buffer.from("raw-mime") });
+    const client = fakeImapClient({
+      search: vi.fn().mockResolvedValue([703, 701, 702]),
+      fetchOne,
     });
     const repository = fakeRepository();
     const documentIngestionService = fakeDocumentIngestionService();
     const parseMail = vi.fn().mockResolvedValue({
-      messageId: "<msg-502@techgrit.com>",
+      messageId: "<msg-701@techgrit.com>",
       attachments: [{ filename: "invoice.pdf", content: Buffer.from("pdf-bytes") }],
     });
 
     const service = new EmailIngestionService(repository, documentIngestionService, () => client, parseMail);
     const result = await service.checkInbox();
 
-    expect(result.errors).toEqual([{ messageUid: 501, error: "IMAP fetch failed" }]);
+    expect(result.emailsScanned).toBe(1);
+    expect(fetchOne).toHaveBeenCalledTimes(1);
+    expect(fetchOne).toHaveBeenCalledWith("701", expect.anything(), expect.anything());
+    expect(client.messageFlagsAdd).toHaveBeenCalledWith(701, ["\\Seen"], { uid: true });
     expect(result.documentsIngested).toBe(1);
   });
 

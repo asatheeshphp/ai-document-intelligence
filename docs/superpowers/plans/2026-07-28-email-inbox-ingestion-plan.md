@@ -132,7 +132,10 @@ build speculatively now.
 - [ ] Call the endpoint again with no new unread mail; confirm a clean
       "0 new emails" result, not a re-download or duplicate `Email` row.
 - [ ] Send a test email with a non-PDF/image attachment (e.g. `.docx`); confirm it's
-      correctly ignored without erroring the batch.
+      correctly ignored without erroring the call.
+- [ ] With two unread test emails present, confirm one `checkInbox()` call processes only
+      the older one (by UID) and leaves the newer one unread; a second call picks up the
+      newer one (see Task 10).
 - [ ] **If IMAP connection fails at this step** (tenant blocks legacy auth): stop, report
       the failure precisely (what error, at what step), and treat Microsoft Graph OAuth as
       a new, separate spec/plan — do not attempt to force IMAP to work around a
@@ -163,6 +166,22 @@ build speculatively now.
 - [x] `.env.local.example`, `README.md` step 8, and the design doc's Task 1/out-of-scope
       sections updated to document the new var and reflect that subject filtering is now
       in scope (previously explicitly deferred).
+
+### Task 10: Limit each trigger call to one message — added after initial build, per explicit request
+
+**Files:** `services/email-ingestion.service.ts`, test file, spec doc
+
+- [x] `checkInbox()` now processes at most one message per call: the unread message with
+      the lowest UID (oldest), sorted explicitly rather than trusting IMAP search-result
+      ordering. Processes that one message whatever it is, even if it doesn't qualify
+      (wrong subject, no attachment) — not "keep scanning until one qualifies." The rest
+      of the unread messages are left untouched for the next call.
+- [x] `emailsScanned` in the result is now `0` or `1`, never a larger batch count.
+- [x] Unit tests: multiple unread UIDs returned out of order — confirms only the lowest
+      is fetched/processed and the others are never touched; a failure on the one
+      processed message is still recorded in `errors` without throwing.
+- [x] Design doc's Task 1 section and Verification list updated to describe one-message-
+      per-call semantics instead of batch processing.
 
 ---
 

@@ -68,15 +68,17 @@ export class EmailIngestionService {
 
   /**
    * Reads unread mail from the configured mailbox, downloads any PDF/image attachments
-   * to EMAIL_ATTACHMENT_DIR, and feeds each one through the existing
-   * DocumentIngestionService pipeline (no extraction/chunking/embedding logic is
-   * duplicated here). Marks a message \Seen once its attachments are safely on disk --
-   * not after extraction succeeds -- so a slow or failed extraction doesn't cause the
-   * same email to be re-downloaded on every subsequent check. One message failing is
-   * recorded and skipped; it does not abort the rest of the batch. If EMAIL_SUBJECT_FILTER
-   * is set, only messages whose subject contains it (case-insensitive) are considered --
-   * everything else is marked read and skipped, same as a message with no matching
-   * attachment.
+   * to EMAIL_ATTACHMENT_DIR, and feeds it through the existing DocumentIngestionService
+   * pipeline (no extraction/chunking/embedding logic is duplicated here). Marks the
+   * message \Seen once its attachments are safely on disk -- not after extraction
+   * succeeds -- so a slow or failed extraction doesn't cause the same email to be
+   * re-downloaded on the next check. If EMAIL_SUBJECT_FILTER is set, a non-matching
+   * subject is marked read and skipped, same as a message with no matching attachment.
+   *
+   * Processes at most ONE message per call -- the oldest unread message (by UID
+   * ascending), whatever it is, even if it doesn't qualify (wrong subject, no matching
+   * attachment). One trigger call = one message looked at, not "keep going until
+   * something qualifies" -- the next unprocessed message is picked up on the next call.
    */
   async checkInbox(): Promise<EmailCheckResult> {
     const config = getEmailEnv();
@@ -98,26 +100,25 @@ export class EmailIngestionService {
         const uids = await client.search({ seen: false }, { uid: true });
         if (!uids || uids.length === 0) return result;
 
-        result.emailsScanned = uids.length;
+        const oldestUid = [...uids].sort((a, b) => a - b)[0];
+        result.emailsScanned = 1;
 
-        for (const uid of uids) {
-          try {
-            const ingested = await this.processMessage(
-              uid,
-              client,
-              config.EMAIL_ATTACHMENT_DIR,
-              config.EMAIL_SUBJECT_FILTER
-            );
-            if (ingested > 0) {
-              result.emailsWithAttachments += 1;
-              result.documentsIngested += ingested;
-            }
-          } catch (err) {
-            result.errors.push({
-              messageUid: uid,
-              error: err instanceof Error ? err.message : "Unknown error processing message",
-            });
+        try {
+          const ingested = await this.processMessage(
+            oldestUid,
+            client,
+            config.EMAIL_ATTACHMENT_DIR,
+            config.EMAIL_SUBJECT_FILTER
+          );
+          if (ingested > 0) {
+            result.emailsWithAttachments += 1;
+            result.documentsIngested += ingested;
           }
+        } catch (err) {
+          result.errors.push({
+            messageUid: oldestUid,
+            error: err instanceof Error ? err.message : "Unknown error processing message",
+          });
         }
       } finally {
         lock.release();
