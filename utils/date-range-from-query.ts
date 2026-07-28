@@ -25,18 +25,18 @@ function escapeRegExp(value: string): string {
 // letter/number property escapes (with the "u" flag) bound every script correctly.
 function buildMonthPattern(monthWord: string): RegExp {
   const escaped = escapeRegExp(monthWord);
-  return new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])(?:\\s+(\\d{4}))?`, "iu");
+  return new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])(?:,?\\s+(?<year>\\d{4}))?`, "iu");
 }
 
 /**
- * Extracts a month-scoped date range from a natural-language query, e.g. "billed in
- * July", "facturado en julio", or "ஜூலை 2026-ல்". Search itself is pure semantic
- * similarity — it has no notion of "July" unless the query happens to lexically/
- * semantically resemble a July invoice — so without this, a query naming a month can
- * still return invoices from unrelated months that just scored well on general
- * phrasing. When a year isn't stated, assumes referenceDate's year (typically "now"),
- * since that's what a business user means by a bare month name in the common case.
- * Returns null if no recognized month name (in any supported language) is found.
+ * Extracts a month-wide date range from a natural-language query, e.g. "billed in July",
+ * "July 2026", or "ஜூலை 2026-ல்". Search itself is pure semantic similarity — it has no
+ * notion of "July" unless the query happens to lexically/semantically resemble a matching
+ * invoice — so without this, a query naming a month can still return invoices from
+ * unrelated months that just scored well on general phrasing. When a year isn't stated,
+ * assumes referenceDate's year (typically "now"), since that's what a business user means
+ * by a bare month in the common case. Returns null if no recognized month name (in any
+ * supported language) is found.
  */
 export function extractDateRangeFromQuery(query: string, referenceDate: Date = new Date()): DateRangeFilter | null {
   const lower = query.toLowerCase();
@@ -46,7 +46,9 @@ export function extractDateRangeFromQuery(query: string, referenceDate: Date = n
       const match = lower.match(buildMonthPattern(monthNames[monthIndex]));
       if (!match) continue;
 
-      const year = match[1] ? parseInt(match[1], 10) : referenceDate.getFullYear();
+      const groups = match.groups ?? {};
+      const year = groups.year ? parseInt(groups.year, 10) : referenceDate.getFullYear();
+
       const from = new Date(Date.UTC(year, monthIndex, 1, 0, 0, 0, 0));
       const to = new Date(Date.UTC(year, monthIndex + 1, 0, 23, 59, 59, 999));
       return { from, to };

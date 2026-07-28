@@ -56,4 +56,11 @@ describe("extractDateRangeFromQuery", () => {
     expect(range?.from.toISOString()).toBe("2026-07-01T00:00:00.000Z");
     expect(range?.to.toISOString()).toBe("2026-07-31T23:59:59.999Z");
   });
+
+  it("does not confuse a large number of digits with a day (e.g. avoids swallowing part of a year)", () => {
+    const range = extractDateRangeFromQuery("invoices from July 2026");
+
+    expect(range?.from.toISOString()).toBe("2026-07-01T00:00:00.000Z");
+    expect(range?.to.toISOString()).toBe("2026-07-31T23:59:59.999Z");
+  });
 });
