@@ -39,4 +39,16 @@ describe("lexicalOverlapScore", () => {
   it("does not treat unrelated words that happen to end in s as a match", () => {
     expect(lexicalOverlapScore("status of the shipment", "Supplier: CloudNova Software")).toBe(0);
   });
+
+  it("does not boost on a bare 4-digit year shared across unrelated invoices", () => {
+    // Reproduces the reported bug: a query mentioning "2026" matched almost every
+    // invoice's header/notes chunk in this corpus purely because they all share that
+    // year in their invoice numbers, flattening the ranking. The year alone shouldn't
+    // count as a relevance signal — date scoping is extractDateRangeFromQuery's job.
+    expect(lexicalOverlapScore("what was billed in 2026", "Invoice Number: CNS-2026-501")).toBe(0);
+  });
+
+  it("still scores a real match when the query has a year plus a genuine keyword", () => {
+    expect(lexicalOverlapScore("CloudNova invoice 2026", "Supplier: CloudNova Software")).toBe(1);
+  });
 });

@@ -31,4 +31,29 @@ describe("extractDateRangeFromQuery", () => {
     const range = extractDateRangeFromQuery("June 2026 invoices");
     expect(range?.to.toISOString()).toBe("2026-06-30T23:59:59.999Z");
   });
+
+  it("recognizes Spanish month names", () => {
+    const range = extractDateRangeFromQuery("¿Qué se facturó en julio de 2026?");
+    expect(range?.from.toISOString()).toBe("2026-07-01T00:00:00.000Z");
+    expect(range?.to.toISOString()).toBe("2026-07-31T23:59:59.999Z");
+  });
+
+  it("recognizes French month names, including accented ones", () => {
+    const range = extractDateRangeFromQuery("Qu'est-ce qui a été facturé en juillet 2026 ?");
+    expect(range?.from.toISOString()).toBe("2026-07-01T00:00:00.000Z");
+  });
+
+  it("recognizes Tamil month names", () => {
+    // \b doesn't bound non-Latin scripts in JS regex -- this is the real regression test
+    // for the Unicode-aware lookaround fix, not just a language-coverage check.
+    const range = extractDateRangeFromQuery("ஜூலை 2026-ல் என்னென்ன பில் செய்யப்பட்டது?");
+    expect(range?.from.toISOString()).toBe("2026-07-01T00:00:00.000Z");
+    expect(range?.to.toISOString()).toBe("2026-07-31T23:59:59.999Z");
+  });
+
+  it("recognizes Telugu month names", () => {
+    const range = extractDateRangeFromQuery("జూలై 2026లో ఏమేమి బిల్ చేయబడ్డాయి?");
+    expect(range?.from.toISOString()).toBe("2026-07-01T00:00:00.000Z");
+    expect(range?.to.toISOString()).toBe("2026-07-31T23:59:59.999Z");
+  });
 });

@@ -5,9 +5,20 @@ const STOPWORDS = new Set([
   "show", "find", "me", "please", "about", "invoice", "invoices",
 ]);
 
+// A bare 4-digit token almost always reads as a calendar year in an invoice corpus, and
+// every invoice here shares a year with several others (e.g. "-2026-" in most invoice
+// numbers) — so it's a near-universal, non-identifying token, not a real signal of
+// relevance. Confirmed live: a Tamil/Telugu query containing "2026" got a full verbatim-
+// match boost against nearly every invoice's header/notes chunk purely because they all
+// contain that year somewhere, flattening the ranking (every result tied at the clamped
+// max). Date reasoning belongs to extractDateRangeFromQuery's dedicated filter, not here.
+function looksLikeBareYear(token: string): boolean {
+  return /^\d{4}$/.test(token);
+}
+
 function tokenize(text: string): string[] {
   return (text.toLowerCase().match(/[a-z0-9]+/g) ?? []).filter(
-    (token) => token.length >= 3 && !STOPWORDS.has(token)
+    (token) => token.length >= 3 && !STOPWORDS.has(token) && !looksLikeBareYear(token)
   );
 }
 
