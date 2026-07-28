@@ -19,6 +19,7 @@ export interface SearchResultItem {
 interface SearchResultCardProps {
   result: SearchResultItem;
   query: string;
+  onViewFullInvoice: (documentId: string) => void;
 }
 
 const CHUNK_TYPE_LABELS: Record<string, string> = {
@@ -33,7 +34,7 @@ const CHUNK_TYPE_LABELS: Record<string, string> = {
   other: "Other",
 };
 
-export function SearchResultCard({ result, query }: SearchResultCardProps) {
+export function SearchResultCard({ result, query, onViewFullInvoice }: SearchResultCardProps) {
   const segments = getHighlightSegments(result.chunkText, query);
   const isSemanticOnly = segments.length > 0 && segments.every((segment) => !segment.match);
   const chunkTypeLabel = result.chunkType
@@ -87,6 +88,14 @@ export function SearchResultCard({ result, query }: SearchResultCardProps) {
           )
         )}
       </p>
+
+      <button
+        type="button"
+        onClick={() => onViewFullInvoice(result.documentId)}
+        className="mt-3 text-xs font-medium text-zinc-500 hover:text-zinc-700 hover:underline dark:text-zinc-400 dark:hover:text-zinc-200"
+      >
+        View full invoice →
+      </button>
     </div>
   );
 }

@@ -3,6 +3,7 @@
 import { useState, type FormEvent } from "react";
 import { SearchFilters, type SearchFiltersValue } from "@/components/search/SearchFilters";
 import { SearchResultCard, type SearchResultItem } from "@/components/search/SearchResultCard";
+import { DocumentDetailsDrawer } from "@/components/documents/DocumentDetailsDrawer";
 
 const DEFAULT_FILTERS: SearchFiltersValue = {
   topK: 5,
@@ -33,6 +34,7 @@ export default function SearchPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastQuery, setLastQuery] = useState<string | null>(null);
+  const [viewingDocumentId, setViewingDocumentId] = useState<string | null>(null);
 
   async function runSearch(event?: FormEvent) {
     event?.preventDefault();
@@ -158,11 +160,18 @@ export default function SearchPage() {
                 key={`${result.chunkId ?? result.invoiceId}-${index}`}
                 result={result}
                 query={lastQuery ?? ""}
+                onViewFullInvoice={setViewingDocumentId}
               />
             ))}
           </div>
         )}
       </div>
+
+      <DocumentDetailsDrawer
+        key={viewingDocumentId ?? "closed"}
+        documentId={viewingDocumentId}
+        onClose={() => setViewingDocumentId(null)}
+      />
     </div>
   );
 }
