@@ -32,18 +32,27 @@ Write production-ready code from the beginning.
 
 ## Current Progress
 
-Milestone 1 is fully completed and working.
+The full pipeline described in "Overall Application Flow" below is built and working,
+end to end: local document ingestion (PDF text extraction, vision-model OCR fallback for
+scans/images), AI extraction to structured JSON, invoice storage, chunking + embedding,
+hybrid semantic search, and a search UI. Not a single milestone anymore — see
+`docs/superpowers/specs/2026-07-28-e5-hybrid-search-design.md` and
+`docs/superpowers/plans/2026-07-28-e5-hybrid-search-plan.md` for the current, up-to-date
+design and implementation record of the search/embedding layer specifically.
 
 Completed work includes:
 
-- Next.js 15 application
-- TypeScript
-- Tailwind CSS
-- MongoDB connection
-- Environment configuration
-- Pino logger
-- Health API
-- Database health API
+- Next.js 15 application, TypeScript, Tailwind CSS
+- MongoDB connection, Pino logger, Health API
+- Document ingestion (`/api/documents/ingest`): PDF text extraction, image/scan OCR via
+  a vision-language model, document-type classification (gates structured extraction to
+  invoices only)
+- AI extraction to structured JSON (Ollama chat model), with sanitization against known
+  model failure modes (address-field body-dumps, hallucinated tax entries)
+- Invoice storage (Repository pattern), atomic upsert-by-source-path dedup
+- Chunking + embedding (E5 sidecar) + hybrid semantic search (vector similarity +
+  lexical-overlap boost + date-range filtering + signal-gap safety net)
+- Search UI (`/search`) with filters, full-invoice drawer, chunk-type explanations
 
 MongoDB connectivity has already been verified.
 
@@ -75,16 +84,22 @@ Logging
 
 AI
 
-- Ollama
+- Ollama (chat/extraction/classification/translation, vision)
+- Standalone Python/FastAPI sidecar for text embeddings (not Ollama-served)
 
-Models currently planned
+Models in use
 
-- qwen2.5:1.5b
-- nomic-embed-text
+- `qwen2.5:1.5b` — extraction, classification, chat/RAG, translation fallback
+- `qwen2.5vl:7b` — vision-based text extraction for scans/images
+- `intfloat/multilingual-e5-base` — text embeddings, served by `e5-service/`
+  (replaced an earlier `nomic-embed-text` plan, and a subsequent SigLIP2 experiment that
+  benchmarked poorly for text-to-text retrieval — see
+  `docs/superpowers/specs/2026-07-28-e5-hybrid-search-design.md`)
 
 OCR
 
-- PaddleOCR
+- No PaddleOCR. Scans/images route to the vision-language model above instead — decided
+  during implementation, not part of the original plan.
 
 Platform
 
@@ -176,11 +191,11 @@ Every future milestone should support this workflow.
 
 ## Current Milestone
 
-Only work on Milestone 2 – Database Layer.
-
-Do not implement anything related to IMAP, OCR, AI, embeddings or dashboard.
-
-The objective of Milestone 2 is to build a strong persistence layer that all future milestones will use.
+The milestone-by-milestone framing above is no longer how work is tracked — the pipeline
+through embeddings/search is built (see "Current Progress"). Active design/scope
+decisions now live in `docs/superpowers/specs/` and `docs/superpowers/plans/`; check the
+most recent dated file there for current state before starting new work. IMAP-based
+email ingestion (vs. the current local-file ingestion path) remains unbuilt.
 
 ---
 
