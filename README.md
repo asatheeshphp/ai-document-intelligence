@@ -6,7 +6,9 @@ keyword + date-scoped search. Everything runs locally — no cloud AI services r
 
 For the current search/embedding architecture and design decisions, see
 `docs/superpowers/specs/2026-07-28-e5-hybrid-search-design.md` and
-`docs/superpowers/plans/2026-07-28-e5-hybrid-search-plan.md`.
+`docs/superpowers/plans/2026-07-28-e5-hybrid-search-plan.md`. For the email-inbox
+ingestion feature (optional, see step 8 below), see
+`docs/superpowers/specs/2026-07-28-email-inbox-ingestion-design.md`.
 
 ## Prerequisites
 
@@ -30,7 +32,14 @@ npm install
 
 ## 2. Configure environment variables
 
-Create `.env.local` in the project root (this file is gitignored — never commit it):
+Copy `.env.local.example` to `.env.local` (this file is gitignored — never commit it) and
+fill in your own values:
+
+```bash
+cp .env.local.example .env.local
+```
+
+At minimum:
 
 ```bash
 NODE_ENV=development
@@ -126,6 +135,44 @@ curl -s -X POST http://localhost:3000/api/search \
 Or just open [http://localhost:3000/search](http://localhost:3000/search) in the
 browser and search there directly.
 
+## 8. (Optional) Set up email inbox checking
+
+Reads unread mail from a configured mailbox, downloads PDF/image attachments to
+`data/incoming/`, and feeds each through the same ingestion pipeline as step 7 — no
+separate extraction logic. This is optional; skip it if you're not using this feature.
+Each developer configures their own mailbox — nothing mailbox-specific is hardcoded.
+
+For a Microsoft 365 mailbox (e.g. a `techgrit.com` address), you need an **app
+password**, not your normal login password — Microsoft disabled legacy IMAP basic auth
+with the regular password for most tenants. Generate one at
+[https://mysignins.microsoft.com/security-info](https://mysignins.microsoft.com/security-info)
+("Add sign-in method" → "App password"), if your org's tenant allows it. If IMAP is
+blocked entirely for your tenant, this feature won't connect — see
+`docs/superpowers/specs/2026-07-28-email-inbox-ingestion-design.md` for why, and what the
+fallback would look like.
+
+Add to `.env.local` (already templated in `.env.local.example`):
+
+```bash
+EMAIL_IMAP_HOST=outlook.office365.com
+EMAIL_IMAP_PORT=993
+EMAIL_IMAP_USER=you@techgrit.com
+EMAIL_IMAP_PASSWORD=your-app-password
+```
+
+Then trigger a check manually (there's no background poller — call this endpoint
+whenever you want to check for new mail):
+
+```bash
+curl -X POST http://localhost:3000/api/email/check-inbox
+```
+
+Response shape: `{ success, emailsScanned, emailsWithAttachments, documentsIngested,
+errors }`. Only unread messages with a PDF or image attachment are downloaded; everything
+else is left untouched. A message is marked read once its attachments are safely
+downloaded — re-running the endpoint with no new unread mail returns a clean
+"0 scanned" result rather than re-processing anything.
+
 ## Troubleshooting
 
 - **`ZodError: MONGODB_URI ... expected string, received undefined`** — `.env.local` is
@@ -137,6 +184,11 @@ browser and search there directly.
 - **Extraction/classification hangs or times out** — check `ollama list` shows both
   pulled models, and `ollama serve` is running. Vision extraction in particular can take
   minutes per page on CPU-only hardware — this is expected, not a bug.
+- **`Email inbox checking is not configured: missing ...`** — one or more
+  `EMAIL_IMAP_*` vars aren't set in `.env.local`; the error names exactly which ones.
+- **Inbox check fails with an auth error** — if your M365 tenant has legacy IMAP basic
+  auth disabled with no app-password fallback, this feature can't connect for you — see
+  `docs/superpowers/specs/2026-07-28-email-inbox-ingestion-design.md`.
 - **Running a one-off debug script with `tsx`** — env vars aren't loaded by default the
   way Next.js loads them; run with:
   ```bash
