@@ -97,11 +97,15 @@ const LEXICAL_BOOST = 0.5;
 // A single invoice can have 15-20+ chunks (per-line-item/per-tax-entry chunking), and
 // once one invoice is clearly the best match, most of its chunks tend to score close
 // together — without a cap, one invoice can fill every slot up to topK with its own
-// near-duplicate/low-signal fragments (bare "CGST"/"SGST" tax-type chunks, an unrelated
-// line item), crowding out other candidate invoices and reading as repetitive "duplicate
-// data" to the user even though it's one invoice, not a duplicate. Capping keeps results
-// diverse across invoices while preserving global score order.
-const MAX_RESULTS_PER_INVOICE = 3;
+// near-duplicate/low-signal fragments, crowding out other candidate invoices and reading
+// as repetitive "duplicate data" to the user even though it's one invoice, not a
+// duplicate. 1 rather than a higher cap: an unrelated invoice's *other* chunks (no
+// literal keyword overlap with the query) can still land in the same score band as a
+// genuinely relevant invoice's non-matching chunks — SigLIP2 anisotropy that
+// LEXICAL_BOOST doesn't reach when neither chunk has literal overlap. Showing only each
+// invoice's single best chunk means a wrong invoice surfaces as one visibly weaker
+// result instead of several, rather than trying to rank its individual chunks correctly.
+const MAX_RESULTS_PER_INVOICE = 1;
 
 export interface SearchFilters {
   vendorName?: string;

@@ -201,7 +201,7 @@ describe("SearchService.search", () => {
     const dominantCount = results.filter((r) => r.invoiceId === dominantInvoiceId.toString()).length;
     const otherCount = results.filter((r) => r.invoiceId === otherInvoiceId.toString()).length;
 
-    expect(dominantCount).toBe(3);
+    expect(dominantCount).toBe(1);
     expect(otherCount).toBe(1);
   });
 });
