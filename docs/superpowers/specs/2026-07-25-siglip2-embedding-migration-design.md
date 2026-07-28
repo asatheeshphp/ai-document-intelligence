@@ -1,5 +1,13 @@
 # SigLIP2 Text Embedding Migration
 
+> **SUPERSEDED (2026-07-28):** This plan was implemented, then a live 40-query benchmark
+> (English/Spanish/Tamil/Telugu) showed SigLIP2's text-to-text discrimination too weak to
+> trust (3/10 English recall@1, genuine/nonsense scores fully interleaved). SigLIP2 was
+> retired entirely in favor of `multilingual-e5-base`, benchmarked head-to-head on the same
+> 40 queries (9/10 English recall@1). See
+> `docs/superpowers/specs/2026-07-28-e5-hybrid-search-design.md` for the design that
+> actually shipped and is current. Kept here as a historical record of the decision.
+
 ## Context
 
 This is a follow-on to the vision-quality-classification work already merged to `main` (see `docs/superpowers/specs/2026-07-25-vision-quality-classification-design.md`), which added a configurable vision-language model (Qwen2.5-VL, via Ollama) for scanned/image-based document text extraction, and a document classifier gating structured extraction to invoices.

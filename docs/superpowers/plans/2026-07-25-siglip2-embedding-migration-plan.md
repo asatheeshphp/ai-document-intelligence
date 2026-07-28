@@ -1,5 +1,10 @@
 # SigLIP2 Text Embedding Migration Implementation Plan
 
+> **SUPERSEDED (2026-07-28):** SigLIP2 was retired after live benchmarking showed it too
+> weak for text-to-text retrieval; `multilingual-e5-base` replaced it. See
+> `docs/superpowers/plans/2026-07-28-e5-hybrid-search-plan.md` for what's current. Kept
+> here as a historical record.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace `nomic-embed-text` (via Ollama) with SigLIP2 (served by a new standalone Python/FastAPI sidecar) as the platform's text embedding model, to enable multilingual semantic search — restructuring invoice chunking to fit SigLIP2's short token limit, migrating existing invoice embeddings, and recalibrating search relevance thresholds against the new embedding space.
