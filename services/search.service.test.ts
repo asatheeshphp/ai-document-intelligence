@@ -4,6 +4,7 @@ import { SearchService } from "@/services/search.service";
 import type { ProcessingRepository } from "@/repositories/processing.repository";
 import type { VectorRepository } from "@/repositories/vector.repository";
 import type { E5Service } from "@/services/e5.service";
+import type { OllamaService } from "@/services/ollama.service";
 
 function makeEmbedding(overrides: Record<string, unknown> = {}) {
   return {
@@ -201,5 +202,67 @@ describe("SearchService.search", () => {
 
     expect(dominantCount).toBe(1);
     expect(otherCount).toBe(1);
+  });
+
+  it("falls back to a translated query when a non-ASCII query finds nothing", async () => {
+    // Reproduces the measured, structural gap: a genuine non-English query with no
+    // literal anchor can score too low to clear the threshold even though the model
+    // "knows" the right answer conceptually, confirmed by comparing genuine vs.
+    // nonsense scores across languages (see search.service.ts's fallback comment).
+    // Simulates that here by making the original-language embedding score low and the
+    // translated-English embedding score well above threshold.
+    const invoiceId = new Types.ObjectId();
+    const chunkId = new Types.ObjectId();
+    const embedding = makeEmbedding({ invoiceId, chunkId, embeddingVector: [1, 0, 0] });
+
+    const embedText = vi.fn().mockImplementation(async (text: string) => {
+      return text === "translated english query" ? [1, 0, 0] : [0, 1, 0];
+    });
+    const fakeE5Service = { embedText } as unknown as E5Service;
+
+    const translateToEnglish = vi.fn().mockResolvedValue("translated english query");
+    const fakeOllamaService = { translateToEnglish } as unknown as OllamaService;
+
+    const fakeVectorRepository = {
+      findAllEmbeddings: vi.fn().mockResolvedValue([embedding]),
+    } as unknown as VectorRepository;
+
+    const fakeProcessingRepository = {
+      findChunksByIds: vi.fn().mockResolvedValue([makeChunk(chunkId, "generic chunk text")]),
+      findInvoicesByIds: vi.fn().mockResolvedValue([makeInvoice(invoiceId, "Some Vendor")]),
+    } as unknown as ProcessingRepository;
+
+    const service = new SearchService(fakeProcessingRepository, fakeVectorRepository, fakeE5Service, fakeOllamaService);
+    const nonAsciiQuery = "தமிழ் கேள்வி";
+    const { results } = await service.search({ query: nonAsciiQuery });
+
+    expect(translateToEnglish).toHaveBeenCalledWith(nonAsciiQuery);
+    expect(embedText).toHaveBeenCalledWith(nonAsciiQuery, "query");
+    expect(embedText).toHaveBeenCalledWith("translated english query", "query");
+    expect(results).toHaveLength(1);
+    expect(results[0].invoiceId).toBe(invoiceId.toString());
+  });
+
+  it("does not attempt translation for a plain-ASCII query that finds nothing", async () => {
+    const embedText = vi.fn().mockResolvedValue([0, 1, 0]);
+    const fakeE5Service = { embedText } as unknown as E5Service;
+
+    const translateToEnglish = vi.fn().mockResolvedValue("should not be called");
+    const fakeOllamaService = { translateToEnglish } as unknown as OllamaService;
+
+    const fakeVectorRepository = {
+      findAllEmbeddings: vi.fn().mockResolvedValue([makeEmbedding({ embeddingVector: [1, 0, 0] })]),
+    } as unknown as VectorRepository;
+
+    const fakeProcessingRepository = {
+      findChunksByIds: vi.fn().mockResolvedValue([]),
+      findInvoicesByIds: vi.fn().mockResolvedValue([]),
+    } as unknown as ProcessingRepository;
+
+    const service = new SearchService(fakeProcessingRepository, fakeVectorRepository, fakeE5Service, fakeOllamaService);
+    const { results } = await service.search({ query: "recipe for chocolate lava cake dessert" });
+
+    expect(translateToEnglish).not.toHaveBeenCalled();
+    expect(results).toHaveLength(0);
   });
 });

@@ -179,3 +179,23 @@ describe("OllamaService.classifyDocument", () => {
     expect(outcome.data).toBeNull();
   });
 });
+
+describe("OllamaService.translateToEnglish", () => {
+  beforeEach(() => {
+    vi.mocked(axios.post).mockReset();
+  });
+
+  it("returns the trimmed translation from the chat model", async () => {
+    vi.mocked(axios.post).mockResolvedValue({
+      data: { message: { content: "  Find the invoice for the shipment.  " } },
+    });
+
+    const service = new OllamaService();
+    const result = await service.translateToEnglish("சரக்குக்கான இன்வாய்ஸைக் கண்டுபிடி.");
+
+    expect(result).toBe("Find the invoice for the shipment.");
+
+    const [, body] = vi.mocked(axios.post).mock.calls[0] as [string, { messages: { content: string }[] }];
+    expect(body.messages[0].content).toContain("சரக்குக்கான இன்வாய்ஸைக் கண்டுபிடி.");
+  });
+});

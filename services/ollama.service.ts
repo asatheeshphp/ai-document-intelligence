@@ -218,6 +218,17 @@ export class OllamaService {
     return String(response.data?.message?.content ?? "").trim();
   }
 
+  async translateToEnglish(text: string, model: string = env.OLLAMA_CHAT_MODEL): Promise<string> {
+    const prompt = `Translate the following text to English. If it is already in English, output it unchanged. Output ONLY the translation — no explanation, no quotation marks, no commentary.
+
+Text:
+"""
+${text}
+"""`;
+
+    return this.chatCompletion(prompt, model);
+  }
+
   async visionExtractText(images: string[], model: string = env.OLLAMA_VISION_MODEL): Promise<string> {
     const baseUrl = env.OLLAMA_BASE_URL.replace(/\/$/, "");
 

@@ -2,6 +2,7 @@ import type { Types } from "mongoose";
 import { ProcessingRepository } from "@/repositories/processing.repository";
 import { VectorRepository } from "@/repositories/vector.repository";
 import { E5Service } from "@/services/e5.service";
+import { OllamaService } from "@/services/ollama.service";
 import { cosineSimilarity } from "@/utils/vector";
 import { lexicalOverlapScore } from "@/utils/lexical-score";
 import { extractDateRangeFromQuery } from "@/utils/date-range-from-query";
@@ -110,15 +111,54 @@ export class SearchService {
   constructor(
     private readonly repository: ProcessingRepository = new ProcessingRepository(),
     private readonly vectorRepository: VectorRepository = new VectorRepository(),
-    private readonly e5Service: E5Service = new E5Service()
+    private readonly e5Service: E5Service = new E5Service(),
+    private readonly ollamaService: OllamaService = new OllamaService()
   ) {}
 
+  /**
+   * Runs the primary search; if it finds nothing AND the query isn't plain ASCII
+   * (i.e. it's plausibly non-English), retries once against an English translation.
+   *
+   * This exists because of a measured, structural gap, not a guess: a genuine,
+   * non-English query with no literal anchor (no shared proper noun/number with the
+   * target text) produces E5 scores that are fully interleaved with nonsense-query
+   * scores in every language tested — no threshold value separates them (see
+   * DEFAULT_THRESHOLD's calibration note). Confirmed live: Tamil/Telugu queries with no
+   * anchor ("12-ton shipment", "diesel fuel expenses", "Coimbatore to Chennai
+   * transport") returned nothing, while the same intents WITH an anchor (an amount, a
+   * brand name) worked fine. Translating to English turns that into an English-to-
+   * English comparison, which measured reliably — same task E5 is actually good at.
+   *
+   * Only a fallback, not automatic translation of every query: a query that already
+   * found results, or that's already plain ASCII (almost certainly English, so
+   * translation would just return it unchanged), skips the extra Ollama round trip.
+   */
   async search(input: SearchInput): Promise<SearchOutput> {
     const topK = input.topK && input.topK > 0 ? Math.min(Math.floor(input.topK), MAX_TOP_K) : DEFAULT_TOP_K;
     const threshold = input.threshold ?? DEFAULT_THRESHOLD;
     const filters = input.filters;
 
-    const queryVector = await this.e5Service.embedText(input.query, "query");
+    const primary = await this.runSearch(input.query, topK, threshold, filters);
+    if (primary.results.length > 0) return primary;
+
+    const isPlainAscii = /^[\x00-\x7F]*$/.test(input.query);
+    if (isPlainAscii) return primary;
+
+    const translated = await this.ollamaService.translateToEnglish(input.query).catch(() => null);
+    if (!translated || translated.trim().toLowerCase() === input.query.trim().toLowerCase()) {
+      return primary;
+    }
+
+    return this.runSearch(translated, topK, threshold, filters);
+  }
+
+  private async runSearch(
+    query: string,
+    topK: number,
+    threshold: number,
+    filters: SearchFilters | undefined
+  ): Promise<SearchOutput> {
+    const queryVector = await this.e5Service.embedText(query, "query");
 
     let invoiceIdFilter: Types.ObjectId[] | null = null;
 
@@ -127,7 +167,7 @@ export class SearchService {
     // in July") is turned into an actual invoiceDate range here, reusing the same
     // explicit-filter mechanism below, so a query naming a month can't surface invoices
     // from unrelated months just because they scored well on general content.
-    const inferredDateRange = extractDateRangeFromQuery(input.query);
+    const inferredDateRange = extractDateRangeFromQuery(query);
     const effectiveDateFrom = filters?.invoiceDateFrom ?? inferredDateRange?.from.toISOString();
     const effectiveDateTo = filters?.invoiceDateTo ?? inferredDateRange?.to.toISOString();
 
@@ -182,7 +222,7 @@ export class SearchService {
     const allScored = candidates.map((embedding) => {
       const vectorScore = cosineSimilarity(queryVector, embedding.embeddingVector);
       const chunkText = embedding.chunkId ? chunkById.get(embedding.chunkId.toString())?.text ?? "" : "";
-      const lexicalScore = lexicalOverlapScore(input.query, chunkText);
+      const lexicalScore = lexicalOverlapScore(query, chunkText);
 
       return { embedding, score: vectorScore + LEXICAL_BOOST * lexicalScore };
     });
