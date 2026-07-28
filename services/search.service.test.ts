@@ -81,4 +81,37 @@ describe("SearchService.search", () => {
 
     expect(results[0].invoice?.vendorName).toBe("CloudNova Software");
   });
+
+  it("clamps the returned score at 1 even when the lexical boost pushes the combined score above it", async () => {
+    // A verbatim keyword match on top of a near-perfect vector match combines to above
+    // 1.0 (vectorScore + LEXICAL_BOOST * lexicalScore, e.g. 1.0 + 0.5). The UI renders
+    // this as "N% match", so a raw value above 1 would display as a nonsensical >100%.
+    const invoiceId = new Types.ObjectId();
+    const chunkId = new Types.ObjectId();
+
+    const embedding = makeEmbedding({
+      invoiceId,
+      chunkId,
+      embeddingVector: [1, 0, 0],
+    });
+
+    const fakeSiglipService = {
+      embedText: vi.fn().mockResolvedValue([1, 0, 0]),
+    } as unknown as SiglipService;
+
+    const fakeVectorRepository = {
+      findAllEmbeddings: vi.fn().mockResolvedValue([embedding]),
+    } as unknown as VectorRepository;
+
+    const fakeProcessingRepository = {
+      findChunksByIds: vi.fn().mockResolvedValue([makeChunk(chunkId, "Supplier: CloudNova Software")]),
+      findInvoicesByIds: vi.fn().mockResolvedValue([makeInvoice(invoiceId, "CloudNova Software")]),
+    } as unknown as ProcessingRepository;
+
+    const service = new SearchService(fakeProcessingRepository, fakeVectorRepository, fakeSiglipService);
+    const { results } = await service.search({ query: "CloudNova", threshold: 0 });
+
+    expect(results[0].score).toBeLessThanOrEqual(1);
+    expect(results[0].score).toBe(1);
+  });
 });

@@ -235,7 +235,10 @@ export class SearchService {
         chunkId: item.embedding.chunkId?.toString(),
         chunkType: item.embedding.chunkType,
         chunkText: chunk?.text ?? "",
-        score: item.score,
+        // item.score (vector similarity + LEXICAL_BOOST) is used unclamped for ranking/
+        // threshold/gap-check above, but a strong lexical match can push it past 1.0 —
+        // clamp only here, for display, so the UI's "N% match" never shows over 100%.
+        score: Math.min(item.score, 1),
         invoice: invoice
           ? {
               invoiceNumber: invoice.invoiceNumber,
