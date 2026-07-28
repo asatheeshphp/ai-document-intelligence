@@ -66,8 +66,10 @@ export class EmailIngestionService {
   - If there are no PDF/image attachments, marks the message read and moves on — this
     email carried nothing this app can act on, not a failure.
   - If there are matching attachments, writes each one to a local folder
-    (`EMAIL_ATTACHMENT_DIR`, default `data/incoming/`), one file per attachment, named to
-    avoid collisions (e.g. `${messageUid}-${originalFilename}`).
+    (`EMAIL_ATTACHMENT_DIR`, default `data/samples/` — changed from an earlier,
+    dedicated, gitignored `data/incoming/`, per explicit instruction; see section 4),
+    one file per attachment, named to avoid collisions (e.g.
+    `${messageUid}-${originalFilename}`).
   - Creates an `Email` record (existing model, no schema change) with `messageId` = the
     IMAP message's `Message-Id` header, `source: "INBOX"`, sender/subject/receivedAt from
     the parsed headers. `messageId` already has a unique index — if a message is somehow
@@ -109,7 +111,7 @@ EMAIL_IMAP_PORT: z.coerce.number().default(993),
 EMAIL_IMAP_USER: z.string(),
 EMAIL_IMAP_PASSWORD: z.string(),
 EMAIL_IMAP_MAILBOX: z.string().default("INBOX"),
-EMAIL_ATTACHMENT_DIR: z.string().default("data/incoming"),
+EMAIL_ATTACHMENT_DIR: z.string().default("data/samples"),
 ```
 
 All optional-with-defaults except host/user/password, which are required only when
@@ -121,12 +123,19 @@ env vars lazily, on `checkInbox()`, with a clear error naming exactly which vari
 missing — same "surface it clearly" principle just applied to `E5Service`'s connection
 error.
 
-### 4. `data/incoming/` — new local folder for downloaded attachments
+### 4. Attachment storage — `data/samples/` (changed after initial build)
 
-- Gitignored (mirrors how `.env*` is gitignored) — these are real downloaded attachments,
-  potentially containing real business data, not sample fixtures like `data/samples/`.
-- Kept separate from `data/samples/` so the two are never confused: `samples/` is
-  committed test fixtures, `incoming/` is real runtime output.
+Originally a dedicated, gitignored `data/incoming/` folder, kept deliberately separate
+from `data/samples/` (committed test fixtures) so real downloaded attachments —
+potentially containing real business/personal data — could never end up committed to
+git. Changed per explicit instruction to store directly in `data/samples/` instead, and
+`data/incoming/` was removed along with its gitignore rule.
+
+**Consequence, stated plainly, not glossed over:** `data/samples/` is git-tracked. Real
+downloaded attachments now land in a trackable folder alongside the committed sample
+fixtures, with no gitignore rule distinguishing them. A `git add`/`git commit` covering
+that folder can commit real data. This tradeoff was raised explicitly and accepted —
+"no special handling, just move the storage location" — rather than assumed silently.
 
 ## Files touched
 
@@ -135,7 +144,7 @@ error.
 - `config/env.ts` (new optional email vars, validated lazily — see above)
 - `.env.local.example` (new — documents the required email vars without committing real
   credentials; see Verification)
-- `.gitignore` (add `data/incoming/`)
+- `.gitignore` (no longer adds an attachment-storage entry — see section 4)
 - `README.md` (document the new endpoint + env vars + IMAP app-password setup)
 - `package.json` (add `imapflow`, `mailparser`, and their `@types` packages)
 
@@ -162,7 +171,7 @@ No changes to `models/email.model.ts` — the existing schema already fits.
    fill in without needing to ask.
 3. Live test against a real `techgrit.com` mailbox (app password generated first): send a
    test email with a PDF attachment to that mailbox, call `POST
-   /api/email/check-inbox`, confirm the attachment lands in `data/incoming/`, an `Email`
+   /api/email/check-inbox`, confirm the attachment lands in `data/samples/`, an `Email`
    record and a fully-processed `Invoice` exist, and the message is marked read.
 4. Confirm calling the endpoint a second time with no new unread mail returns a clean
    "0 new emails" result rather than reprocessing the same message.

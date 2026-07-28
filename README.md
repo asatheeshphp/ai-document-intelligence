@@ -138,9 +138,14 @@ browser and search there directly.
 ## 8. (Optional) Set up email inbox checking
 
 Reads unread mail from a configured mailbox, downloads PDF/image attachments to
-`data/incoming/`, and feeds each through the same ingestion pipeline as step 7 — no
+`data/samples/`, and feeds each through the same ingestion pipeline as step 7 — no
 separate extraction logic. This is optional; skip it if you're not using this feature.
 Each developer configures their own mailbox — nothing mailbox-specific is hardcoded.
+
+**Note:** downloaded attachments land in the same `data/samples/` folder as the
+committed test fixtures, and — unlike an earlier version of this feature — are **not**
+gitignored. Real attachments (potentially containing real business/personal data) are as
+committable as any other file here; be deliberate about what you `git add`.
 
 For a Microsoft 365 mailbox (e.g. a `techgrit.com` address), you need an **app
 password**, not your normal login password — Microsoft disabled legacy IMAP basic auth

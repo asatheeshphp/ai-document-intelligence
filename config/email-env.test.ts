@@ -50,7 +50,7 @@ describe("getEmailEnv", () => {
     expect(config.EMAIL_IMAP_HOST).toBe("outlook.office365.com");
     expect(config.EMAIL_IMAP_PORT).toBe(993);
     expect(config.EMAIL_IMAP_MAILBOX).toBe("INBOX");
-    expect(config.EMAIL_ATTACHMENT_DIR).toBe("data/incoming");
+    expect(config.EMAIL_ATTACHMENT_DIR).toBe("data/samples");
   });
 
   it("respects an explicit port override", () => {

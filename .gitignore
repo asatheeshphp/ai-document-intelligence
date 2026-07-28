@@ -37,9 +37,6 @@ yarn-error.log*
 .env*
 !.env.local.example
 
-# email attachments downloaded at runtime (real business data, not sample fixtures)
-/data/incoming/
-
 # vercel
 .vercel
 

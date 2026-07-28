@@ -12,21 +12,24 @@ flow in `PROJECT_CONTEXT.md`.
 
 **Architecture:** A new `EmailIngestionService` connects via IMAP (`imapflow` +
 `mailparser`), searches for unread messages, downloads matching attachments to
-`data/incoming/`, records each email via the existing `Email` model, and calls the
-existing `DocumentIngestionService.processLocalDocument` per attachment — no extraction/
-chunking/embedding logic is duplicated. A new `POST /api/email/check-inbox` endpoint is
-the manual trigger. All mailbox settings are per-developer env vars.
+`data/samples/` (originally a dedicated gitignored `data/incoming/`; changed per explicit
+instruction — see Task 12), records each email via the existing `Email` model, and calls
+the existing `DocumentIngestionService.processLocalDocument` per attachment — no
+extraction/chunking/embedding logic is duplicated. A new `POST /api/email/check-inbox`
+endpoint is the manual trigger. All mailbox settings are per-developer env vars.
 
 **Tech stack:** `imapflow` + `mailparser` (new deps), TypeScript/Node (existing app),
 Vitest (existing test runner), the existing `Email` model (no schema changes).
 
 **Reference spec:** `docs/superpowers/specs/2026-07-28-email-inbox-ingestion-design.md`
 
-**Known risk, not hidden:** this plan assumes IMAP with an app password works against a
-real M365 `techgrit.com` mailbox. If a developer's tenant has legacy IMAP auth disabled
-with no app-password fallback, Task 7 (live verification) will fail for them specifically,
-and Microsoft Graph OAuth becomes a separate, larger follow-up plan — not something to
-build speculatively now.
+**Known risk, materialized:** this plan assumed IMAP with an app password would work
+against a real M365 `techgrit.com` mailbox. Live testing confirmed the tenant blocks app
+passwords entirely (no option to generate one at all in the account security settings) —
+IMAP itself connects fine, but no credential this app can present satisfies it. Per
+explicit decision, rather than building Microsoft Graph OAuth, testing moved to a
+different mailbox (Gmail, with an app password) for this POC; the `techgrit.com`/M365
+question is unresolved and deferred, not solved.
 
 ---
 
@@ -54,7 +57,7 @@ build speculatively now.
 
 - [ ] Add `EMAIL_IMAP_HOST`, `EMAIL_IMAP_PORT` (default `993`), `EMAIL_IMAP_USER`,
       `EMAIL_IMAP_PASSWORD`, `EMAIL_IMAP_MAILBOX` (default `"INBOX"`),
-      `EMAIL_ATTACHMENT_DIR` (default `"data/incoming"`) — as a **separate** schema/parse
+      `EMAIL_ATTACHMENT_DIR` (default `"data/samples"` — see Task 12) — as a **separate** schema/parse
       call from the existing top-level `env`, so a missing email config doesn't block app
       boot for developers not using this feature yet (see design doc's reasoning).
 - [ ] Write `.env.local.example` documenting every var (existing ones too, for a complete
@@ -122,24 +125,32 @@ build speculatively now.
 
 ### Task 7: Live verification against a real mailbox
 
-- [ ] Generate an app password for a real `techgrit.com` (or test) M365 account; confirm
-      it's reachable via IMAP at all before assuming Task 3 will work end-to-end for it.
-- [ ] Set the new env vars in `.env.local`, send a real test email with a PDF attachment
-      to that mailbox.
-- [ ] `curl -X POST http://localhost:3000/api/email/check-inbox`; confirm: the attachment
-      exists in `data/incoming/`, an `Email` row and a fully-extracted `Invoice` exist,
-      and the source message is now marked read in the actual mailbox.
-- [ ] Call the endpoint again with no new unread mail; confirm a clean
-      "0 new emails" result, not a re-download or duplicate `Email` row.
+- [x] Attempted against a real `techgrit.com` M365 account first. Confirmed IMAP itself
+      connects (`AUTHENTICATE PLAIN` reached the server), but the tenant blocks app
+      passwords entirely — no "App password" option exists in the account's security
+      settings (Authenticator/hardware token/phone only). Per the stop-and-report
+      instruction below, did not attempt to force it; moved to a different mailbox.
+- [x] Switched to a personal Gmail account with a generated app password, per explicit
+      decision — see the plan header's "Known risk, materialized" note. `techgrit.com`
+      remains untested and unresolved.
+- [x] Set the env vars in `.env.local`, sent a real test email with a PDF attachment
+      (plus, incidentally, 3 inline signature images) to that mailbox.
+- [x] `curl -X POST http://localhost:3000/api/email/check-inbox`; confirmed: the real
+      invoice PDF landed in `data/samples/`, was correctly classified and extracted
+      (`documentsIngested: 1`, no errors), and the source message was marked read in the
+      actual mailbox. This run is also what surfaced the inline-image issue fixed in
+      Task 11.
+- [ ] Call the endpoint again with no new unread mail; confirm a clean "0 scanned" result,
+      not a re-download or duplicate `Email` row.
 - [ ] Send a test email with a non-PDF/image attachment (e.g. `.docx`); confirm it's
       correctly ignored without erroring the call.
 - [ ] With two unread test emails present, confirm one `checkInbox()` call processes only
-      the older one (by UID) and leaves the newer one unread; a second call picks up the
-      newer one (see Task 10).
-- [ ] **If IMAP connection fails at this step** (tenant blocks legacy auth): stop, report
-      the failure precisely (what error, at what step), and treat Microsoft Graph OAuth as
-      a new, separate spec/plan — do not attempt to force IMAP to work around a
-      server-side policy block.
+      the newer one (by UID) and leaves the older one unread; a second call picks up the
+      older one (see Task 10).
+- [x] **IMAP connection failed for the M365 account** (tenant blocks app passwords
+      entirely): stopped, reported the failure precisely (`AUTHENTICATE failed`, app
+      password unavailable in account settings), and did not attempt to force a
+      workaround — matches the instruction below exactly.
 
 ### Task 8: Documentation
 
@@ -202,11 +213,30 @@ build speculatively now.
 - [x] Design doc's attachment-filtering section updated with the live-testing evidence
       that motivated this.
 
+### Task 12: Move attachment storage from a dedicated gitignored folder to `data/samples/` — added after initial build, per explicit request
+
+**Files:** `config/email-env.ts`, `config/email-env.test.ts`, `.gitignore`,
+`.env.local.example`, `README.md`, spec doc, plan header
+
+- [x] `EMAIL_ATTACHMENT_DIR` default changed from `data/incoming` to `data/samples`.
+      `data/incoming/` and its gitignore rule removed entirely.
+- [x] Consequence stated explicitly, not silently accepted: `data/samples/` is
+      git-tracked, so real downloaded attachments (potentially real business/personal
+      data) are now as committable as any other file in that folder — raised explicitly
+      as a tradeoff before making the change; "no special handling, accept the risk" was
+      the explicit decision.
+- [x] Unit tests, `.env.local.example`, `README.md`, and the spec doc updated to describe
+      `data/samples/` as the current (not `data/incoming/` as the historical) storage
+      location.
+
 ---
 
 ## Out of scope for this plan (explicit)
 
-- Microsoft Graph API / OAuth (only if Task 7 proves IMAP blocked)
+- Microsoft Graph API / OAuth — Task 7 confirmed this tenant's IMAP is blocked (no app
+  password option at all), so this is now a real, needed follow-up if `techgrit.com`
+  access is ever required, not just a hypothetical. Still not built in this plan; testing
+  moved to a different mailbox instead, per explicit decision.
 - Scheduled/background polling
 - Attachment types beyond PDF/image
 - Sender filtering (subject filtering is now in scope — see Task 9)
