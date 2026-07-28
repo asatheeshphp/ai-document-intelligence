@@ -5,10 +5,12 @@ import { SearchFilters, type SearchFiltersValue } from "@/components/search/Sear
 import { SearchResultCard, type SearchResultItem } from "@/components/search/SearchResultCard";
 
 const DEFAULT_FILTERS: SearchFiltersValue = {
-  topK: 10,
-  // Calibrated against measured scores: unrelated queries top out ~0.43, genuinely
-  // relevant queries start ~0.52+. See services/search.service.ts for the evidence.
-  threshold: 0.45,
+  topK: 5,
+  // null (not a hardcoded number) so the request omits "threshold" entirely by default,
+  // letting the server use search.service.ts's own calibrated DEFAULT_THRESHOLD instead
+  // of silently overriding it with a value from an earlier embedding model's
+  // calibration. Only set here if the user explicitly picks one under "Show filters".
+  threshold: null,
   vendorName: "",
   customerName: "",
   invoiceDateFrom: "",
@@ -54,7 +56,7 @@ export default function SearchPage() {
         body: JSON.stringify({
           query: trimmed,
           topK: filters.topK,
-          threshold: filters.threshold,
+          ...(filters.threshold !== null ? { threshold: filters.threshold } : {}),
           ...(Object.keys(activeFilters).length > 0 ? { filters: activeFilters } : {}),
         }),
       });

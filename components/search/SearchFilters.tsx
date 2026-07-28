@@ -1,6 +1,6 @@
 export interface SearchFiltersValue {
   topK: number;
-  threshold: number;
+  threshold: number | null;
   vendorName: string;
   customerName: string;
   invoiceDateFrom: string;
@@ -32,7 +32,7 @@ export function SearchFilters({ value, onChange, className = "" }: SearchFilters
           min={1}
           max={50}
           value={value.topK}
-          onChange={(e) => update("topK", Number(e.target.value) || 10)}
+          onChange={(e) => update("topK", Number(e.target.value) || 5)}
           className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-50"
         />
       </label>
@@ -44,9 +44,10 @@ export function SearchFilters({ value, onChange, className = "" }: SearchFilters
           min={0}
           max={1}
           step={0.05}
-          value={value.threshold}
-          onChange={(e) => update("threshold", Number(e.target.value) || 0)}
-          className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-50"
+          value={value.threshold ?? ""}
+          placeholder="server default"
+          onChange={(e) => update("threshold", e.target.value === "" ? null : Number(e.target.value))}
+          className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900 placeholder:text-zinc-400 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-50"
         />
       </label>
 
