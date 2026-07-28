@@ -163,4 +163,45 @@ describe("SearchService.search", () => {
     expect(results).toHaveLength(1);
     expect(results[0].invoice?.vendorName).toBe("Express Cargo & Logistics");
   });
+
+  it("caps how many chunks a single invoice can contribute, leaving room for other invoices", async () => {
+    // Reproduces the reported UX confusion: a single invoice with many chunks (per
+    // line item, per tax entry) can otherwise fill every result slot with its own
+    // near-duplicate/low-signal fragments, reading as "duplicate data" even though
+    // it's genuinely one invoice, and crowding out other real candidates.
+    const dominantInvoiceId = new Types.ObjectId();
+    const otherInvoiceId = new Types.ObjectId();
+
+    const dominantEmbeddings = Array.from({ length: 6 }, () =>
+      makeEmbedding({ invoiceId: dominantInvoiceId, chunkId: new Types.ObjectId(), embeddingVector: [1, 0, 0] })
+    );
+    const otherEmbedding = makeEmbedding({
+      invoiceId: otherInvoiceId,
+      chunkId: new Types.ObjectId(),
+      embeddingVector: [0.95, 0, Math.sqrt(1 - 0.95 * 0.95)],
+    });
+
+    const fakeSiglipService = { embedText: vi.fn().mockResolvedValue([1, 0, 0]) } as unknown as SiglipService;
+
+    const fakeVectorRepository = {
+      findAllEmbeddings: vi.fn().mockResolvedValue([...dominantEmbeddings, otherEmbedding]),
+    } as unknown as VectorRepository;
+
+    const allChunkIds = [...dominantEmbeddings, otherEmbedding].map((e) => e.chunkId);
+    const fakeProcessingRepository = {
+      findChunksByIds: vi.fn().mockResolvedValue(allChunkIds.map((id) => makeChunk(id, "generic chunk text"))),
+      findInvoicesByIds: vi
+        .fn()
+        .mockResolvedValue([makeInvoice(dominantInvoiceId, "Dominant Vendor"), makeInvoice(otherInvoiceId, "Other Vendor")]),
+    } as unknown as ProcessingRepository;
+
+    const service = new SearchService(fakeProcessingRepository, fakeVectorRepository, fakeSiglipService);
+    const { results } = await service.search({ query: "generic invoice query", threshold: 0, topK: 10 });
+
+    const dominantCount = results.filter((r) => r.invoiceId === dominantInvoiceId.toString()).length;
+    const otherCount = results.filter((r) => r.invoiceId === otherInvoiceId.toString()).length;
+
+    expect(dominantCount).toBe(3);
+    expect(otherCount).toBe(1);
+  });
 });

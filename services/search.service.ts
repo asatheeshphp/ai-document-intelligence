@@ -94,6 +94,15 @@ const MIN_CANDIDATES_FOR_GAP_CHECK = 3;
 // the candidate chunk.
 const LEXICAL_BOOST = 0.5;
 
+// A single invoice can have 15-20+ chunks (per-line-item/per-tax-entry chunking), and
+// once one invoice is clearly the best match, most of its chunks tend to score close
+// together — without a cap, one invoice can fill every slot up to topK with its own
+// near-duplicate/low-signal fragments (bare "CGST"/"SGST" tax-type chunks, an unrelated
+// line item), crowding out other candidate invoices and reading as repetitive "duplicate
+// data" to the user even though it's one invoice, not a duplicate. Capping keeps results
+// diverse across invoices while preserving global score order.
+const MAX_RESULTS_PER_INVOICE = 3;
+
 export interface SearchFilters {
   vendorName?: string;
   customerName?: string;
@@ -226,10 +235,19 @@ export class SearchService {
       }
     }
 
-    const scored = allScored
-      .filter((item) => item.score >= threshold)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, topK);
+    const sortedByScore = allScored.filter((item) => item.score >= threshold).sort((a, b) => b.score - a.score);
+
+    const chunksPerInvoice = new Map<string, number>();
+    const scored: typeof sortedByScore = [];
+    for (const item of sortedByScore) {
+      const invoiceKey = item.embedding.invoiceId.toString();
+      const countSoFar = chunksPerInvoice.get(invoiceKey) ?? 0;
+      if (countSoFar >= MAX_RESULTS_PER_INVOICE) continue;
+
+      chunksPerInvoice.set(invoiceKey, countSoFar + 1);
+      scored.push(item);
+      if (scored.length >= topK) break;
+    }
 
     const invoiceIds = Array.from(new Set(scored.map((item) => item.embedding.invoiceId.toString())));
     const invoices = await this.repository.findInvoicesByIds(invoiceIds);
