@@ -3,7 +3,7 @@ import { Types } from "mongoose";
 import { SearchService } from "@/services/search.service";
 import type { ProcessingRepository } from "@/repositories/processing.repository";
 import type { VectorRepository } from "@/repositories/vector.repository";
-import type { SiglipService } from "@/services/siglip.service";
+import type { E5Service } from "@/services/e5.service";
 
 function makeEmbedding(overrides: Record<string, unknown> = {}) {
   return {
@@ -12,7 +12,7 @@ function makeEmbedding(overrides: Record<string, unknown> = {}) {
     documentId: new Types.ObjectId(),
     chunkId: new Types.ObjectId(),
     chunkType: "supplier",
-    embeddingModel: "siglip2",
+    embeddingModel: "multilingual-e5-base",
     embeddingVector: [1, 0, 0],
     status: "COMPLETED",
     ...overrides,
@@ -29,12 +29,10 @@ function makeInvoice(id: Types.ObjectId, vendorName: string) {
 
 describe("SearchService.search", () => {
   it("ranks the invoice whose chunk verbatim-contains the query above a vector-only near-tie", async () => {
-    // Reproduces the documented bug: querying "CloudNova" returned Medicare's chunk as
-    // #1 because SigLIP2's cosine scores for short, template-heavy invoice text don't
-    // reliably separate relevant from irrelevant content. Here Medicare's embedding is
-    // deliberately given a slightly higher raw vector score than CloudNova's, mimicking
-    // that anisotropy — the lexical boost must still put CloudNova's chunk on top since
-    // the query literally appears in its text.
+    // Regression guard for the originally-documented bug (querying "CloudNova" returned
+    // Medicare's chunk as #1) — the lexical boost must decisively win a verbatim keyword
+    // match even when a near-tied embedding score would otherwise rank a different
+    // invoice's chunk first, regardless of which embedding model is in use.
     const cloudNovaInvoiceId = new Types.ObjectId();
     const medicareInvoiceId = new Types.ObjectId();
     const cloudNovaChunkId = new Types.ObjectId();
@@ -53,9 +51,9 @@ describe("SearchService.search", () => {
       embeddingVector: [0.999, 0.001, 0],
     });
 
-    const fakeSiglipService = {
+    const fakeE5Service = {
       embedText: vi.fn().mockResolvedValue([1, 0, 0]),
-    } as unknown as SiglipService;
+    } as unknown as E5Service;
 
     const fakeVectorRepository = {
       findAllEmbeddings: vi.fn().mockResolvedValue([cloudNovaEmbedding, medicareEmbedding]),
@@ -76,7 +74,7 @@ describe("SearchService.search", () => {
         ]),
     } as unknown as ProcessingRepository;
 
-    const service = new SearchService(fakeProcessingRepository, fakeVectorRepository, fakeSiglipService);
+    const service = new SearchService(fakeProcessingRepository, fakeVectorRepository, fakeE5Service);
     const { results } = await service.search({ query: "CloudNova", threshold: 0 });
 
     expect(results[0].invoice?.vendorName).toBe("CloudNova Software");
@@ -95,9 +93,9 @@ describe("SearchService.search", () => {
       embeddingVector: [1, 0, 0],
     });
 
-    const fakeSiglipService = {
+    const fakeE5Service = {
       embedText: vi.fn().mockResolvedValue([1, 0, 0]),
-    } as unknown as SiglipService;
+    } as unknown as E5Service;
 
     const fakeVectorRepository = {
       findAllEmbeddings: vi.fn().mockResolvedValue([embedding]),
@@ -108,7 +106,7 @@ describe("SearchService.search", () => {
       findInvoicesByIds: vi.fn().mockResolvedValue([makeInvoice(invoiceId, "CloudNova Software")]),
     } as unknown as ProcessingRepository;
 
-    const service = new SearchService(fakeProcessingRepository, fakeVectorRepository, fakeSiglipService);
+    const service = new SearchService(fakeProcessingRepository, fakeVectorRepository, fakeE5Service);
     const { results } = await service.search({ query: "CloudNova", threshold: 0 });
 
     expect(results[0].score).toBeLessThanOrEqual(1);
@@ -129,7 +127,7 @@ describe("SearchService.search", () => {
       embeddingVector: [1, 0, 0],
     });
 
-    const fakeSiglipService = { embedText: vi.fn().mockResolvedValue([1, 0, 0]) } as unknown as SiglipService;
+    const fakeE5Service = { embedText: vi.fn().mockResolvedValue([1, 0, 0]) } as unknown as E5Service;
 
     const listInvoices = vi.fn().mockResolvedValue([makeInvoice(julyInvoiceId, "Express Cargo & Logistics")]);
     const findAllEmbeddings = vi.fn();
@@ -146,7 +144,7 @@ describe("SearchService.search", () => {
       findInvoicesByIds: vi.fn().mockResolvedValue([makeInvoice(julyInvoiceId, "Express Cargo & Logistics")]),
     } as unknown as ProcessingRepository;
 
-    const service = new SearchService(fakeProcessingRepository, fakeVectorRepository, fakeSiglipService);
+    const service = new SearchService(fakeProcessingRepository, fakeVectorRepository, fakeE5Service);
     const { results } = await service.search({
       query: "What products or services were billed for in July 2026?",
       threshold: 0,
@@ -181,7 +179,7 @@ describe("SearchService.search", () => {
       embeddingVector: [0.95, 0, Math.sqrt(1 - 0.95 * 0.95)],
     });
 
-    const fakeSiglipService = { embedText: vi.fn().mockResolvedValue([1, 0, 0]) } as unknown as SiglipService;
+    const fakeE5Service = { embedText: vi.fn().mockResolvedValue([1, 0, 0]) } as unknown as E5Service;
 
     const fakeVectorRepository = {
       findAllEmbeddings: vi.fn().mockResolvedValue([...dominantEmbeddings, otherEmbedding]),
@@ -195,7 +193,7 @@ describe("SearchService.search", () => {
         .mockResolvedValue([makeInvoice(dominantInvoiceId, "Dominant Vendor"), makeInvoice(otherInvoiceId, "Other Vendor")]),
     } as unknown as ProcessingRepository;
 
-    const service = new SearchService(fakeProcessingRepository, fakeVectorRepository, fakeSiglipService);
+    const service = new SearchService(fakeProcessingRepository, fakeVectorRepository, fakeE5Service);
     const { results } = await service.search({ query: "generic invoice query", threshold: 0, topK: 10 });
 
     const dominantCount = results.filter((r) => r.invoiceId === dominantInvoiceId.toString()).length;

@@ -1,13 +1,13 @@
 import type { Types } from "mongoose";
 import { ProcessingRepository } from "@/repositories/processing.repository";
-import { SiglipService } from "@/services/siglip.service";
+import { E5Service } from "@/services/e5.service";
 import { buildInvoiceChunks } from "@/schemas/invoice-chunker";
 import type { InvoiceExtraction } from "@/schemas/invoice.schema";
 
 export class InvoiceIndexingService {
   constructor(
     private readonly repository: ProcessingRepository = new ProcessingRepository(),
-    private readonly siglipService: SiglipService = new SiglipService()
+    private readonly e5Service: E5Service = new E5Service()
   ) {}
 
   /**
@@ -27,7 +27,7 @@ export class InvoiceIndexingService {
 
     const vectors: number[][] = [];
     for (const draft of drafts) {
-      vectors.push(await this.siglipService.embedText(draft.text));
+      vectors.push(await this.e5Service.embedText(draft.text, "passage"));
     }
 
     await this.repository.deleteChunksByDocumentId(documentId);
@@ -53,7 +53,7 @@ export class InvoiceIndexingService {
         documentId,
         chunkId: chunkDoc._id,
         chunkType: draft.type,
-        embeddingModel: "siglip2",
+        embeddingModel: "multilingual-e5-base",
         embeddingVector: vector,
         status: "COMPLETED",
         metadata,

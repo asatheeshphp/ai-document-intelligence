@@ -16,11 +16,10 @@ function tokenize(text: string): string[] {
  * 1 for a verbatim substring match (e.g. an invoice number or exact vendor name), otherwise
  * the fraction of query's meaningful tokens found in text, and 0 if query has none.
  *
- * This is a lexical *complement* to vector similarity, not a replacement: SigLIP2's text
- * tower (trained for image-text contrastive matching, not text-to-text semantic search)
- * does not reliably rank exact keyword matches — a verbatim vendor name or invoice number
- * can score lower than an unrelated chunk in pure cosine-similarity space. Literal overlap
- * is exactly the signal that's missing there.
+ * This is a lexical *complement* to vector similarity, not a replacement: no embedding
+ * model guarantees an exact identifier (a verbatim vendor name or invoice number)
+ * outranks a semantically-similar-but-wrong chunk purely on cosine similarity — that's
+ * a keyword-match problem, not a semantic one. Literal overlap covers exactly that gap.
  */
 export function lexicalOverlapScore(query: string, text: string): number {
   const normalizedQuery = query.trim().toLowerCase();

@@ -46,7 +46,8 @@ function formatHeader(extraction: InvoiceExtraction): string | null {
 }
 
 // Returns one string per line item (not one combined block) so each chunk stays short
-// enough for SigLIP2's limited text-embedding input length.
+// and granular for retrieval — a query about one line item shouldn't need to match an
+// entire invoice's worth of unrelated items bundled into the same chunk.
 function formatLineItems(items: InvoiceExtraction["lineItems"]): string[] {
   const meaningful = items.filter((item) => item.description || item.amount != null);
 

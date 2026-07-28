@@ -35,10 +35,10 @@ function sanitizeAddressRaw(raw: string | null): string | null {
 // qwen2.5:1.5b treated that list as a checklist to always fill in, producing a hallucinated
 // entry per named type with no rate and either no amount or a zero amount, regardless of
 // whether that tax actually appears on the invoice. These carry no real information but
-// still get embedded and searched, and — like short template-y invoice text generally —
-// can score deceptively high in SigLIP2's similarity space, surfacing an unrelated
-// invoice's noise above genuinely relevant content. Prompt wording alone didn't fully
-// stop it (same lesson as sanitizeAddressRaw above), so drop any tax entry with no rate
+// still get embedded and searched, and a bare, near-empty chunk like "CGST" with no
+// rate or amount is exactly the kind of low-signal content that can surface above
+// genuinely relevant results. Prompt wording alone didn't fully stop it (same lesson as
+// sanitizeAddressRaw above), so drop any tax entry with no rate
 // and no real (non-zero) amount — there's nothing there worth keeping or searching on.
 function isMeaninglessTaxEntry(tax: InvoiceExtraction["taxes"][number]): boolean {
   const hasRate = tax.rate != null;
