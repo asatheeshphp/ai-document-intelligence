@@ -67,5 +67,11 @@ const DocumentSchema = new Schema<IDocument>(
   { timestamps: true, collection: "documents" }
 );
 
+// Enforces at the storage layer that re-ingesting the same local file path can never
+// produce two Document rows, even under concurrent requests — see
+// ProcessingRepository.upsertDocumentBySourcePath. Sparse because not every Document is
+// created from a local file path (metadata.sourcePath may be absent).
+DocumentSchema.index({ "metadata.sourcePath": 1 }, { unique: true, sparse: true });
+
 export const Document =
   mongoose.models.Document || mongoose.model<IDocument>("Document", DocumentSchema);

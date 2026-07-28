@@ -164,6 +164,48 @@ export class ProcessingRepository extends BaseRepository<unknown> {
     });
   }
 
+  /**
+   * Atomically creates-or-replaces the Document for a given local source file path, so
+   * re-ingesting the same file can never leave two Document rows behind, even if two
+   * requests for the same path race. Relies on DocumentSchema's unique index on
+   * "metadata.sourcePath" — findOneAndUpdate's upsert is atomic at the database layer,
+   * and the unique index is the backstop that rejects a genuinely concurrent second
+   * insert (retried here as a plain update, which will then find the winner's row).
+   */
+  async upsertDocumentBySourcePath(
+    sourcePath: string,
+    input: CreateDocumentInput
+  ): Promise<{ document: IDocument; isNew: boolean }> {
+    return this.withConnection(async () => {
+      const update = {
+        emailId: input.emailId,
+        documentType: input.documentType ?? "UNKNOWN",
+        filename: input.filename,
+        contentType: input.contentType,
+        fileSize: input.fileSize,
+        storagePath: input.storagePath,
+        checksum: input.checksum,
+        status: input.status ?? "PENDING",
+        extractedText: input.extractedText,
+        metadata: input.metadata ?? {},
+      };
+      const query = { "metadata.sourcePath": sourcePath };
+
+      try {
+        const existed = await Document.exists(query);
+        const document = await Document.findOneAndUpdate(query, update, { upsert: true, new: true }).exec();
+        return { document: document as IDocument, isNew: !existed };
+      } catch (err) {
+        const isDuplicateKeyError = typeof err === "object" && err !== null && "code" in err && err.code === 11000;
+        if (!isDuplicateKeyError) throw err;
+
+        const document = await Document.findOneAndUpdate(query, update, { new: true }).exec();
+        if (!document) throw err;
+        return { document, isNew: false };
+      }
+    });
+  }
+
   async findDocumentById(id: string | Types.ObjectId): Promise<IDocument | null> {
     return this.withConnection(async () => {
       return Document.findById(id).exec();

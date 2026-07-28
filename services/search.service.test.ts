@@ -114,4 +114,53 @@ describe("SearchService.search", () => {
     expect(results[0].score).toBeLessThanOrEqual(1);
     expect(results[0].score).toBe(1);
   });
+
+  it("scopes candidates to the month named in the query instead of searching across all invoices", async () => {
+    // Reproduces the reported confusion: "What products or services were billed for in
+    // July?" previously had no notion of "July" at all — a June 2014 invoice that
+    // happened to score well on general phrasing would surface right alongside a
+    // genuine July 2026 invoice. A month named in the query should restrict candidates
+    // to that month, the same way an explicit invoiceDateFrom/To filter would.
+    const julyInvoiceId = new Types.ObjectId();
+    const julyChunkId = new Types.ObjectId();
+    const julyEmbedding = makeEmbedding({
+      invoiceId: julyInvoiceId,
+      chunkId: julyChunkId,
+      embeddingVector: [1, 0, 0],
+    });
+
+    const fakeSiglipService = { embedText: vi.fn().mockResolvedValue([1, 0, 0]) } as unknown as SiglipService;
+
+    const listInvoices = vi.fn().mockResolvedValue([makeInvoice(julyInvoiceId, "Express Cargo & Logistics")]);
+    const findAllEmbeddings = vi.fn();
+    const findEmbeddingsByInvoiceIds = vi.fn().mockResolvedValue([julyEmbedding]);
+
+    const fakeVectorRepository = {
+      findAllEmbeddings,
+      findEmbeddingsByInvoiceIds,
+    } as unknown as VectorRepository;
+
+    const fakeProcessingRepository = {
+      listInvoices,
+      findChunksByIds: vi.fn().mockResolvedValue([makeChunk(julyChunkId, "Transportation Coimbatore -> Chennai")]),
+      findInvoicesByIds: vi.fn().mockResolvedValue([makeInvoice(julyInvoiceId, "Express Cargo & Logistics")]),
+    } as unknown as ProcessingRepository;
+
+    const service = new SearchService(fakeProcessingRepository, fakeVectorRepository, fakeSiglipService);
+    const { results } = await service.search({
+      query: "What products or services were billed for in July 2026?",
+      threshold: 0,
+    });
+
+    expect(listInvoices).toHaveBeenCalledWith(
+      expect.objectContaining({
+        invoiceDate: expect.objectContaining({ $gte: expect.any(Date), $lte: expect.any(Date) }),
+      })
+    );
+    // Candidates came from the date-scoped invoice lookup, not an unscoped full scan.
+    expect(findAllEmbeddings).not.toHaveBeenCalled();
+    expect(findEmbeddingsByInvoiceIds).toHaveBeenCalledWith([julyInvoiceId]);
+    expect(results).toHaveLength(1);
+    expect(results[0].invoice?.vendorName).toBe("Express Cargo & Logistics");
+  });
 });

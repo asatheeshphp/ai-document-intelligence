@@ -18,14 +18,12 @@ vi.mock("node:fs/promises", () => ({
 
 function fakeRepository(overrides: Record<string, unknown> = {}): ProcessingRepository {
   return {
-    listDocuments: vi.fn().mockResolvedValue([]),
     deleteChunksByDocumentId: vi.fn().mockResolvedValue(undefined),
     deleteEmbeddingsByDocumentId: vi.fn().mockResolvedValue(undefined),
     deleteInvoicesByDocumentId: vi.fn().mockResolvedValue(undefined),
     deleteExtractionsByDocumentId: vi.fn().mockResolvedValue(undefined),
-    deleteDocumentById: vi.fn().mockResolvedValue(undefined),
     createEmail: vi.fn().mockResolvedValue({ _id: new Types.ObjectId() }),
-    createDocument: vi.fn().mockResolvedValue({ _id: new Types.ObjectId() }),
+    upsertDocumentBySourcePath: vi.fn().mockResolvedValue({ document: { _id: new Types.ObjectId() }, isNew: true }),
     updateDocumentStatus: vi.fn().mockResolvedValue(undefined),
     createExtraction: vi.fn().mockResolvedValue({ _id: new Types.ObjectId() }),
     createInvoice: vi.fn().mockResolvedValue({ _id: new Types.ObjectId() }),
@@ -72,16 +70,22 @@ describe("DocumentIngestionService.processLocalDocument — image files", () => 
 
     // The document actually created must carry the vision-recovered text, not a
     // UTF-8 decoding of the JPEG's binary bytes.
-    const createDocumentCall = vi.mocked(repository.createDocument).mock.calls[0][0];
-    expect(createDocumentCall.extractedText).toBe("Invoice Number: INV-9001\nVendor: GreenLeaf");
+    const upsertCall = vi.mocked(repository.upsertDocumentBySourcePath).mock.calls[0];
+    expect(upsertCall[1].extractedText).toBe("Invoice Number: INV-9001\nVendor: GreenLeaf");
   });
 });
 
 describe("DocumentIngestionService.processLocalDocument — re-ingestion", () => {
-  it("deletes any prior document/invoice/chunks/embeddings for the same source path before creating new ones", async () => {
-    const previousDocumentId = new Types.ObjectId();
+  it("deletes the prior invoice/chunks/embeddings for a re-ingested document instead of stacking new ones", async () => {
+    // upsertDocumentBySourcePath is atomic and already guarantees a single Document row
+    // per source path (see ProcessingRepository) — isNew:false here means this call
+    // reused an existing row, so this run must clear that row's old downstream data
+    // before creating fresh Extraction/Invoice/Chunk/Embedding records.
+    const existingDocumentId = new Types.ObjectId();
     const repository = fakeRepository({
-      listDocuments: vi.fn().mockResolvedValue([{ _id: previousDocumentId }]),
+      upsertDocumentBySourcePath: vi
+        .fn()
+        .mockResolvedValue({ document: { _id: existingDocumentId }, isNew: false }),
     });
 
     const visionExtractionService = {
@@ -111,13 +115,49 @@ describe("DocumentIngestionService.processLocalDocument — re-ingestion", () =>
 
     await service.processLocalDocument({ sourcePath: "data/samples/invoice.jpg" });
 
-    expect(repository.listDocuments).toHaveBeenCalledWith(
-      expect.objectContaining({ "metadata.sourcePath": expect.stringContaining("invoice.jpg") })
+    expect(repository.upsertDocumentBySourcePath).toHaveBeenCalledWith(
+      expect.stringContaining("invoice.jpg"),
+      expect.objectContaining({ extractedText: "Invoice Number: INV-9002" })
     );
-    expect(repository.deleteChunksByDocumentId).toHaveBeenCalledWith(previousDocumentId);
-    expect(repository.deleteEmbeddingsByDocumentId).toHaveBeenCalledWith(previousDocumentId);
-    expect(repository.deleteInvoicesByDocumentId).toHaveBeenCalledWith(previousDocumentId);
-    expect(repository.deleteExtractionsByDocumentId).toHaveBeenCalledWith(previousDocumentId);
-    expect(repository.deleteDocumentById).toHaveBeenCalledWith(previousDocumentId);
+    expect(repository.deleteChunksByDocumentId).toHaveBeenCalledWith(existingDocumentId);
+    expect(repository.deleteEmbeddingsByDocumentId).toHaveBeenCalledWith(existingDocumentId);
+    expect(repository.deleteInvoicesByDocumentId).toHaveBeenCalledWith(existingDocumentId);
+    expect(repository.deleteExtractionsByDocumentId).toHaveBeenCalledWith(existingDocumentId);
+  });
+
+  it("does not delete anything when the document is newly created", async () => {
+    const repository = fakeRepository();
+
+    const visionExtractionService = {
+      extractText: vi.fn().mockResolvedValue("Invoice Number: INV-9003"),
+    } as unknown as VisionExtractionService;
+
+    const documentClassifierService = {
+      classify: vi.fn().mockResolvedValue({ documentType: "INVOICE", confidence: 0.9 }),
+    } as unknown as DocumentClassifierService;
+
+    const ollamaService = {
+      extractInvoiceData: vi.fn().mockResolvedValue({ success: false, data: null, raw: "", error: "n/a" }),
+    } as unknown as OllamaService;
+
+    const indexingService = {
+      replaceChunksAndEmbeddings: vi.fn().mockResolvedValue(undefined),
+    } as unknown as InvoiceIndexingService;
+
+    const service = new DocumentIngestionService(
+      repository,
+      ollamaService,
+      indexingService,
+      new DocumentQualityService(),
+      visionExtractionService,
+      documentClassifierService
+    );
+
+    await service.processLocalDocument({ sourcePath: "data/samples/invoice-new.jpg" });
+
+    expect(repository.deleteChunksByDocumentId).not.toHaveBeenCalled();
+    expect(repository.deleteEmbeddingsByDocumentId).not.toHaveBeenCalled();
+    expect(repository.deleteInvoicesByDocumentId).not.toHaveBeenCalled();
+    expect(repository.deleteExtractionsByDocumentId).not.toHaveBeenCalled();
   });
 });

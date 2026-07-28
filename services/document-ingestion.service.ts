@@ -42,21 +42,6 @@ export class DocumentIngestionService {
     const fileSize = fileBuffer.length;
     const fileName = path.basename(absolutePath);
 
-    // Re-ingesting the same source file (e.g. re-running /api/documents/latest, or
-    // testing the same sample repeatedly) previously created a brand-new Document +
-    // Invoice + chunks + embeddings every time, leaving old copies of the same invoice
-    // behind — they then all surfaced together in search as confusing near-duplicate
-    // results. Replace any prior ingestion of this exact path instead of stacking a new
-    // one on top.
-    const previousDocuments = await this.repository.listDocuments({ "metadata.sourcePath": absolutePath });
-    for (const previousDocument of previousDocuments) {
-      await this.repository.deleteChunksByDocumentId(previousDocument._id);
-      await this.repository.deleteEmbeddingsByDocumentId(previousDocument._id);
-      await this.repository.deleteInvoicesByDocumentId(previousDocument._id);
-      await this.repository.deleteExtractionsByDocumentId(previousDocument._id);
-      await this.repository.deleteDocumentById(previousDocument._id);
-    }
-
     let text = "";
     let extractedText: string | undefined;
     let numPages: number | null = null;
@@ -174,7 +159,14 @@ export class DocumentIngestionService {
       metadata: { sourcePath: absolutePath, ...(input.metadata ?? {}) },
     });
 
-    const document = await this.repository.createDocument({
+    // Re-ingesting the same source file (e.g. re-running /api/documents/latest, or
+    // testing the same sample repeatedly) previously created a brand-new Document row
+    // every time — even with a delete-then-create dedup pass, two concurrent requests
+    // for the same path could each see no existing row and both create one. Upserting
+    // atomically on metadata.sourcePath (backed by a unique index — see
+    // ProcessingRepository.upsertDocumentBySourcePath) guarantees exactly one Document
+    // row per source path regardless of request timing.
+    const { document, isNew } = await this.repository.upsertDocumentBySourcePath(absolutePath, {
       emailId: email._id,
       filename: input.filename ?? path.basename(absolutePath),
       documentType: "UNKNOWN",
@@ -182,6 +174,16 @@ export class DocumentIngestionService {
       extractedText: text,
       metadata: { sourcePath: absolutePath, ...(input.metadata ?? {}) },
     });
+
+    if (!isNew) {
+      // The Document row itself was just atomically replaced above, but its old
+      // downstream records (from the prior ingestion of this same path) still exist
+      // and must be cleared before this run creates new ones.
+      await this.repository.deleteChunksByDocumentId(document._id);
+      await this.repository.deleteEmbeddingsByDocumentId(document._id);
+      await this.repository.deleteInvoicesByDocumentId(document._id);
+      await this.repository.deleteExtractionsByDocumentId(document._id);
+    }
 
     const finalQuality = this.documentQualityService.assess(text, numPages ?? 1);
 

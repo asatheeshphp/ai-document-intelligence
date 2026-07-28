@@ -4,6 +4,7 @@ import { VectorRepository } from "@/repositories/vector.repository";
 import { SiglipService } from "@/services/siglip.service";
 import { cosineSimilarity } from "@/utils/vector";
 import { lexicalOverlapScore } from "@/utils/lexical-score";
+import { extractDateRangeFromQuery } from "@/utils/date-range-from-query";
 
 const DEFAULT_TOP_K = 10;
 const MAX_TOP_K = 50;
@@ -145,19 +146,28 @@ export class SearchService {
 
     let invoiceIdFilter: Types.ObjectId[] | null = null;
 
-    if (filters?.vendorName || filters?.customerName || filters?.invoiceDateFrom || filters?.invoiceDateTo) {
+    // Search is pure semantic similarity — nothing about it understands "July" unless a
+    // chunk happens to resemble that phrasing. A month named in the query (e.g. "billed
+    // in July") is turned into an actual invoiceDate range here, reusing the same
+    // explicit-filter mechanism below, so a query naming a month can't surface invoices
+    // from unrelated months just because they scored well on general content.
+    const inferredDateRange = extractDateRangeFromQuery(input.query);
+    const effectiveDateFrom = filters?.invoiceDateFrom ?? inferredDateRange?.from.toISOString();
+    const effectiveDateTo = filters?.invoiceDateTo ?? inferredDateRange?.to.toISOString();
+
+    if (filters?.vendorName || filters?.customerName || effectiveDateFrom || effectiveDateTo) {
       const invoiceFilter: Record<string, unknown> = {};
 
-      if (filters.vendorName) {
+      if (filters?.vendorName) {
         invoiceFilter.vendorName = { $regex: filters.vendorName, $options: "i" };
       }
-      if (filters.customerName) {
+      if (filters?.customerName) {
         invoiceFilter.customerName = { $regex: filters.customerName, $options: "i" };
       }
-      if (filters.invoiceDateFrom || filters.invoiceDateTo) {
+      if (effectiveDateFrom || effectiveDateTo) {
         const range: Record<string, Date> = {};
-        if (filters.invoiceDateFrom) range.$gte = new Date(filters.invoiceDateFrom);
-        if (filters.invoiceDateTo) range.$lte = new Date(filters.invoiceDateTo);
+        if (effectiveDateFrom) range.$gte = new Date(effectiveDateFrom);
+        if (effectiveDateTo) range.$lte = new Date(effectiveDateTo);
         invoiceFilter.invoiceDate = range;
       }
 
