@@ -4,6 +4,7 @@ import { useState, type FormEvent } from "react";
 import { SearchFilters, type SearchFiltersValue } from "@/components/search/SearchFilters";
 import { SearchResultCard, type SearchResultItem } from "@/components/search/SearchResultCard";
 import { DocumentDetailsDrawer } from "@/components/documents/DocumentDetailsDrawer";
+import { CHUNK_TYPE_INFO } from "@/components/search/chunkTypeInfo";
 
 const DEFAULT_FILTERS: SearchFiltersValue = {
   topK: 5,
@@ -30,6 +31,7 @@ export default function SearchPage() {
   const [query, setQuery] = useState("");
   const [filters, setFilters] = useState<SearchFiltersValue>(DEFAULT_FILTERS);
   const [showFilters, setShowFilters] = useState(false);
+  const [showLegend, setShowLegend] = useState(false);
   const [results, setResults] = useState<SearchResultItem[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -121,12 +123,30 @@ export default function SearchPage() {
             ))}
           <button
             type="button"
+            onClick={() => setShowLegend((v) => !v)}
+            className="text-xs font-medium text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
+          >
+            {showLegend ? "Hide tag meanings" : "What do the tags mean?"}
+          </button>
+          <button
+            type="button"
             onClick={() => setShowFilters((v) => !v)}
             className="ml-auto text-xs font-medium text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
           >
             {showFilters ? "Hide filters" : "Show filters"}
           </button>
         </div>
+
+        {showLegend && (
+          <dl className="mt-3 grid grid-cols-1 gap-x-4 gap-y-1.5 rounded-lg border border-zinc-200 bg-zinc-50 p-3 text-xs sm:grid-cols-2 dark:border-zinc-800 dark:bg-zinc-950">
+            {Object.values(CHUNK_TYPE_INFO).map(({ label, description }) => (
+              <div key={label} className="flex gap-1.5">
+                <dt className="shrink-0 font-medium text-zinc-700 dark:text-zinc-300">{label}:</dt>
+                <dd className="text-zinc-500 dark:text-zinc-400">{description}</dd>
+              </div>
+            ))}
+          </dl>
+        )}
 
         {showFilters && <SearchFilters value={filters} onChange={setFilters} className="mt-4" />}
       </form>

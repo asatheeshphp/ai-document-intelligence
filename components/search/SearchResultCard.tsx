@@ -1,4 +1,5 @@
 import { getHighlightSegments } from "@/components/search/highlight";
+import { CHUNK_TYPE_INFO } from "@/components/search/chunkTypeInfo";
 
 export interface SearchResultItem {
   invoiceId: string;
@@ -22,30 +23,20 @@ interface SearchResultCardProps {
   onViewFullInvoice: (documentId: string) => void;
 }
 
-const CHUNK_TYPE_LABELS: Record<string, string> = {
-  header: "Header",
-  supplier: "Supplier",
-  customer: "Customer",
-  line_items: "Line Items",
-  taxes: "Taxes",
-  payment: "Payment",
-  notes: "Notes",
-  footer: "Footer",
-  other: "Other",
-};
-
 export function SearchResultCard({ result, query, onViewFullInvoice }: SearchResultCardProps) {
   const segments = getHighlightSegments(result.chunkText, query);
   const isSemanticOnly = segments.length > 0 && segments.every((segment) => !segment.match);
-  const chunkTypeLabel = result.chunkType
-    ? (CHUNK_TYPE_LABELS[result.chunkType] ?? result.chunkType)
-    : "Other";
+  const chunkTypeInfo = result.chunkType ? CHUNK_TYPE_INFO[result.chunkType] : undefined;
+  const chunkTypeLabel = chunkTypeInfo?.label ?? result.chunkType ?? "Other";
 
   return (
     <div className="rounded-xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-2">
-          <span className="rounded-full bg-zinc-100 px-2.5 py-0.5 text-xs font-medium text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
+          <span
+            title={chunkTypeInfo?.description}
+            className="rounded-full bg-zinc-100 px-2.5 py-0.5 text-xs font-medium text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300"
+          >
             {chunkTypeLabel}
           </span>
           {result.invoice?.invoiceNumber && (
