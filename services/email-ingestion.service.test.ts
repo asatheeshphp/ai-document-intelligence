@@ -142,6 +142,31 @@ describe("EmailIngestionService.checkInbox", () => {
     expect(documentIngestionService.processLocalDocument).toHaveBeenCalledTimes(2);
   });
 
+  it("skips inline images (e.g. email signature logos) even though the extension matches", async () => {
+    const client = fakeImapClient({
+      search: vi.fn().mockResolvedValue([305]),
+      fetchOne: vi.fn().mockResolvedValue({ source: Buffer.from("raw-mime") }),
+    });
+    const repository = fakeRepository();
+    const documentIngestionService = fakeDocumentIngestionService();
+    const parseMail = vi.fn().mockResolvedValue({
+      messageId: "<msg-5@techgrit.com>",
+      attachments: [
+        { filename: "signature-logo.png", contentDisposition: "inline", content: Buffer.from("png-bytes") },
+        { filename: "invoice.pdf", contentDisposition: "attachment", content: Buffer.from("pdf-bytes") },
+      ],
+    });
+
+    const service = new EmailIngestionService(repository, documentIngestionService, () => client, parseMail);
+    const result = await service.checkInbox();
+
+    expect(result.documentsIngested).toBe(1);
+    expect(documentIngestionService.processLocalDocument).toHaveBeenCalledTimes(1);
+    expect(documentIngestionService.processLocalDocument).toHaveBeenCalledWith(
+      expect.objectContaining({ filename: "invoice.pdf" })
+    );
+  });
+
   it("does not create a duplicate Email record when the message was already recorded", async () => {
     const client = fakeImapClient({
       search: vi.fn().mockResolvedValue([404]),
@@ -177,16 +202,16 @@ describe("EmailIngestionService.checkInbox", () => {
     expect(result.documentsIngested).toBe(0);
   });
 
-  it("processes only the oldest unread message (ascending UID), even when search returns others out of order", async () => {
+  it("processes only the newest unread message (descending UID), even when search returns others out of order", async () => {
     const fetchOne = vi.fn().mockResolvedValue({ source: Buffer.from("raw-mime") });
     const client = fakeImapClient({
-      search: vi.fn().mockResolvedValue([703, 701, 702]),
+      search: vi.fn().mockResolvedValue([701, 703, 702]),
       fetchOne,
     });
     const repository = fakeRepository();
     const documentIngestionService = fakeDocumentIngestionService();
     const parseMail = vi.fn().mockResolvedValue({
-      messageId: "<msg-701@techgrit.com>",
+      messageId: "<msg-703@techgrit.com>",
       attachments: [{ filename: "invoice.pdf", content: Buffer.from("pdf-bytes") }],
     });
 
@@ -195,8 +220,8 @@ describe("EmailIngestionService.checkInbox", () => {
 
     expect(result.emailsScanned).toBe(1);
     expect(fetchOne).toHaveBeenCalledTimes(1);
-    expect(fetchOne).toHaveBeenCalledWith("701", expect.anything(), expect.anything());
-    expect(client.messageFlagsAdd).toHaveBeenCalledWith(701, ["\\Seen"], { uid: true });
+    expect(fetchOne).toHaveBeenCalledWith("703", expect.anything(), expect.anything());
+    expect(client.messageFlagsAdd).toHaveBeenCalledWith(703, ["\\Seen"], { uid: true });
     expect(result.documentsIngested).toBe(1);
   });
 

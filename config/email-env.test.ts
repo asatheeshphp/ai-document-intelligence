@@ -1,13 +1,34 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { getEmailEnv } from "@/config/email-env";
 
+const EMAIL_KEYS = [
+  "EMAIL_IMAP_HOST",
+  "EMAIL_IMAP_PORT",
+  "EMAIL_IMAP_USER",
+  "EMAIL_IMAP_PASSWORD",
+  "EMAIL_IMAP_MAILBOX",
+  "EMAIL_ATTACHMENT_DIR",
+  "EMAIL_SUBJECT_FILTER",
+] as const;
+
+// vitest.setup.ts loads the real .env.local for every test run, which may have real
+// EMAIL_IMAP_* values set on a developer's machine (needed to live-test this feature).
+// vi.unstubAllEnvs() only undoes vi.stubEnv() calls, not variables already present from
+// dotenv -- so these tests must explicitly clear the real values, not just assume they're
+// absent.
+function clearEmailEnv() {
+  for (const key of EMAIL_KEYS) delete process.env[key];
+}
+
 describe("getEmailEnv", () => {
   beforeEach(() => {
     vi.unstubAllEnvs();
+    clearEmailEnv();
   });
 
   afterEach(() => {
     vi.unstubAllEnvs();
+    clearEmailEnv();
   });
 
   it("throws naming every missing required variable", () => {

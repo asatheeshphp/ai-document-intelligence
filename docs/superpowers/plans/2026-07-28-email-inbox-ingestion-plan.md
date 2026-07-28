@@ -172,16 +172,35 @@ build speculatively now.
 **Files:** `services/email-ingestion.service.ts`, test file, spec doc
 
 - [x] `checkInbox()` now processes at most one message per call: the unread message with
-      the lowest UID (oldest), sorted explicitly rather than trusting IMAP search-result
+      the highest UID (newest), sorted explicitly rather than trusting IMAP search-result
       ordering. Processes that one message whatever it is, even if it doesn't qualify
       (wrong subject, no attachment) — not "keep scanning until one qualifies." The rest
-      of the unread messages are left untouched for the next call.
+      of the unread messages are left untouched for the next call. Initially built
+      oldest-first, switched to newest-first during live testing so a just-sent test
+      email is picked up immediately instead of waiting behind an existing unread
+      backlog.
 - [x] `emailsScanned` in the result is now `0` or `1`, never a larger batch count.
-- [x] Unit tests: multiple unread UIDs returned out of order — confirms only the lowest
+- [x] Unit tests: multiple unread UIDs returned out of order — confirms only the highest
       is fetched/processed and the others are never touched; a failure on the one
       processed message is still recorded in `errors` without throwing.
 - [x] Design doc's Task 1 section and Verification list updated to describe one-message-
       per-call semantics instead of batch processing.
+
+### Task 11: Exclude inline images from attachment matching — found during live testing
+
+**Files:** `services/email-ingestion.service.ts`, test file, spec doc
+
+- [x] Live test against the real mailbox (Gmail, after the M365 tenant blocked app
+      passwords entirely) surfaced a real problem: one real email had 3 tiny inline
+      signature/logo PNGs (`contentDisposition: "inline"`) alongside the genuine invoice
+      PDF. All 4 were downloaded and pushed through full extraction — including 3 slow
+      vision-OCR calls on images that were never a real invoice.
+- [x] `isMatchingAttachment` now also excludes any attachment with
+      `contentDisposition === "inline"`, regardless of extension.
+- [x] Unit test: an inline PNG and a real attached PDF in the same message — only the PDF
+      is downloaded/ingested.
+- [x] Design doc's attachment-filtering section updated with the live-testing evidence
+      that motivated this.
 
 ---
 

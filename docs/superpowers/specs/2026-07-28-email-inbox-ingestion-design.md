@@ -40,13 +40,15 @@ export class EmailIngestionService {
 - Connects via IMAP (library: `imapflow` — modern, promise-based, actively maintained;
   `mailparser` to parse fetched messages into headers + attachments).
 - Searches the configured mailbox folder for **unread (`UNSEEN`)** messages, then takes
-  only the **single oldest one (lowest UID)** — added after initial build, per explicit
-  request. One `checkInbox()` call processes at most one message, whatever it is, even if
-  it doesn't qualify (wrong subject, no matching attachment) — it is not "keep scanning
-  oldest-first until something qualifies." The rest of the unread messages are left
-  untouched (still unread) and picked up on subsequent calls, one at a time. This
-  naturally avoids reprocessing the same message on every manual trigger once it's marked
-  read, and keeps each trigger call's work bounded and predictable.
+  only the **single newest one (highest UID)** — added after initial build, per explicit
+  request (originally oldest-first; switched to newest-first so a just-sent test/real
+  email is picked up immediately rather than waiting behind an existing unread backlog).
+  One `checkInbox()` call processes at most one message, whatever it is, even if it
+  doesn't qualify (wrong subject, no matching attachment) — it is not "keep scanning
+  until something qualifies." The rest of the unread messages are left untouched (still
+  unread) and picked up on subsequent calls, one at a time. This naturally avoids
+  reprocessing the same message on every manual trigger once it's marked read, and keeps
+  each trigger call's work bounded and predictable.
 - For the one message picked:
   - If `EMAIL_SUBJECT_FILTER` is set, only messages whose subject contains it
     (case-insensitive substring match, not a prefix) are considered — added after initial
@@ -54,9 +56,13 @@ export class EmailIngestionService {
     candidate was too broad. Unset (the default) means every unread message is still a
     candidate, preserving today's behavior. A non-matching message is marked read and
     skipped, same treatment as one with no matching attachment below — not an error.
-  - Parses attachments; keeps only PDF and image (`.jpg`/`.jpeg`/`.png`) attachments —
-    matches what `DocumentIngestionService` already supports end to end. Anything else
-    attached is ignored, not downloaded, not recorded as an error.
+  - Parses attachments; keeps only PDF and image (`.jpg`/`.jpeg`/`.png`) attachments with
+    `contentDisposition !== "inline"` — matches what `DocumentIngestionService` already
+    supports end to end. Anything else attached is ignored, not downloaded, not recorded
+    as an error. The inline exclusion was added after live testing showed a real email's
+    signature/logo images (`contentDisposition: "inline"`) getting downloaded and pushed
+    through slow vision OCR alongside the genuine invoice PDF — inline images are part of
+    the message body's presentation, not a file the sender deliberately attached.
   - If there are no PDF/image attachments, marks the message read and moves on — this
     email carried nothing this app can act on, not a failure.
   - If there are matching attachments, writes each one to a local folder

@@ -171,8 +171,8 @@ curl -X POST http://localhost:3000/api/email/check-inbox
 ```
 
 Response shape: `{ success, emailsScanned, emailsWithAttachments, documentsIngested,
-errors }`. **Each call processes at most one message** — the oldest unread message
-(lowest UID), whatever it is, even if it turns out to have no matching attachment or
+errors }`. **Each call processes at most one message** — the newest unread message
+(highest UID), whatever it is, even if it turns out to have no matching attachment or
 fails the subject filter. `emailsScanned` is therefore always `0` or `1`, never a batch
 count. Call the endpoint repeatedly (e.g. in a loop, or manually) to work through
 several unread messages one at a time. A message is marked read once its attachments are

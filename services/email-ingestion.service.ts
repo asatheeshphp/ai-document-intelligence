@@ -24,8 +24,15 @@ export interface ImapClient {
 
 const MATCHING_EXTENSIONS = [".pdf", ".jpg", ".jpeg", ".png"];
 
-function isMatchingAttachment(filename: string | undefined): boolean {
+// contentDisposition "inline" means an image embedded in the message body/signature
+// (a logo, a tracking pixel) -- not a file the sender deliberately attached. Confirmed
+// live: a real test email's 3 inline signature PNGs got downloaded and pushed through
+// slow vision OCR alongside the one genuine invoice PDF, none of which were the actual
+// invoice. Only "attachment" (or unspecified, since not every server sets this reliably)
+// is treated as a candidate.
+function isMatchingAttachment(filename: string | undefined, contentDisposition: string | undefined): boolean {
   if (!filename) return false;
+  if (contentDisposition === "inline") return false;
   const ext = path.extname(filename).toLowerCase();
   return MATCHING_EXTENSIONS.includes(ext);
 }
@@ -75,8 +82,8 @@ export class EmailIngestionService {
    * re-downloaded on the next check. If EMAIL_SUBJECT_FILTER is set, a non-matching
    * subject is marked read and skipped, same as a message with no matching attachment.
    *
-   * Processes at most ONE message per call -- the oldest unread message (by UID
-   * ascending), whatever it is, even if it doesn't qualify (wrong subject, no matching
+   * Processes at most ONE message per call -- the newest unread message (by UID
+   * descending), whatever it is, even if it doesn't qualify (wrong subject, no matching
    * attachment). One trigger call = one message looked at, not "keep going until
    * something qualifies" -- the next unprocessed message is picked up on the next call.
    */
@@ -100,12 +107,12 @@ export class EmailIngestionService {
         const uids = await client.search({ seen: false }, { uid: true });
         if (!uids || uids.length === 0) return result;
 
-        const oldestUid = [...uids].sort((a, b) => a - b)[0];
+        const newestUid = [...uids].sort((a, b) => b - a)[0];
         result.emailsScanned = 1;
 
         try {
           const ingested = await this.processMessage(
-            oldestUid,
+            newestUid,
             client,
             config.EMAIL_ATTACHMENT_DIR,
             config.EMAIL_SUBJECT_FILTER
@@ -116,7 +123,7 @@ export class EmailIngestionService {
           }
         } catch (err) {
           result.errors.push({
-            messageUid: oldestUid,
+            messageUid: newestUid,
             error: err instanceof Error ? err.message : "Unknown error processing message",
           });
         }
@@ -148,7 +155,9 @@ export class EmailIngestionService {
       return 0;
     }
 
-    const attachments = (parsed.attachments ?? []).filter((attachment) => isMatchingAttachment(attachment.filename));
+    const attachments = (parsed.attachments ?? []).filter((attachment) =>
+      isMatchingAttachment(attachment.filename, attachment.contentDisposition)
+    );
 
     if (attachments.length === 0) {
       await client.messageFlagsAdd(uid, ["\\Seen"], { uid: true });
