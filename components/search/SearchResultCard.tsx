@@ -1,5 +1,6 @@
 import { getHighlightSegments } from "@/components/search/highlight";
 import { CHUNK_TYPE_INFO } from "@/components/search/chunkTypeInfo";
+import { InfoTooltip } from "@/components/search/InfoTooltip";
 
 export interface SearchResultItem {
   invoiceId: string;
@@ -33,11 +34,9 @@ export function SearchResultCard({ result, query, onViewFullInvoice }: SearchRes
     <div className="rounded-xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-2">
-          <span
-            title={chunkTypeInfo?.description}
-            className="rounded-full bg-zinc-100 px-2.5 py-0.5 text-xs font-medium text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300"
-          >
+          <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2.5 py-0.5 text-xs font-medium text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
             {chunkTypeLabel}
+            {chunkTypeInfo?.description && <InfoTooltip text={chunkTypeInfo.description} />}
           </span>
           {result.invoice?.invoiceNumber && (
             <span className="text-sm font-medium text-zinc-900 dark:text-zinc-50">
