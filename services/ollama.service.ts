@@ -11,6 +11,11 @@ import {
   type DocumentClassification,
 } from "@/schemas/document-classification.schema";
 
+// Measured against this CPU-only Ollama setup: qwen2.5vl:7b took ~308s to transcribe
+// one real invoice photo. Multiplying by image count covers multi-page PDFs sent as
+// multiple images in a single /api/chat call, with headroom over the measured value.
+const VISION_TIMEOUT_PER_IMAGE_MS = 400000;
+
 function buildExtractionPrompt(documentText: string): string {
   return `You are an expert invoice data extraction assistant. Extract ALL available information from the invoice text below into the required JSON structure.
 
@@ -191,11 +196,15 @@ export class OllamaService {
         options: { temperature: 0.1 },
       },
       {
-        // Vision models processing page images run noticeably slower than the 1.5B
-        // text-only chat model on CPU-only Ollama, similar in spirit to why
-        // extractInvoiceData needs 240000ms for schema-constrained decoding — 180s
-        // leaves headroom for multi-page image input without the schema-decoding cost.
-        timeout: 180000,
+        // Measured directly against this CPU-only Ollama setup: a single real invoice
+        // photo took qwen2.5vl:7b ~308s (5.1min) to transcribe — far past a fixed 180s
+        // timeout, which silently failed every image-ingestion attempt (caught upstream
+        // in DocumentIngestionService and logged as a warning, masquerading as a
+        // "document quality too low" result instead of a timeout). All page images for
+        // a document go into one /api/chat call, so the timeout scales with page count
+        // rather than using a fixed ceiling that would only cover one page's worth of
+        // measured time.
+        timeout: images.length * VISION_TIMEOUT_PER_IMAGE_MS,
       }
     );
 

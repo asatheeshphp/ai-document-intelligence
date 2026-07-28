@@ -2,18 +2,22 @@ import { NextResponse } from "next/server";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { DocumentIngestionService } from "@/services/document-ingestion.service";
+import { isImageFile, isPdfFile } from "@/utils/document-file-type";
 
 export async function GET() {
   try {
     const folderPath = path.resolve("data/samples");
     const entries = await fs.readdir(folderPath, { withFileTypes: true });
     const files = entries
-      .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith(".pdf"))
+      .filter((entry) => entry.isFile() && (isPdfFile(entry.name) || isImageFile(entry.name)))
       .map((entry) => entry.name)
       .sort();
 
     if (files.length === 0) {
-      return NextResponse.json({ success: false, error: "No PDF invoices found in data/samples" }, { status: 404 });
+      return NextResponse.json(
+        { success: false, error: "No PDF or image invoices found in data/samples" },
+        { status: 404 }
+      );
     }
 
     const latestFile = files[files.length - 1];

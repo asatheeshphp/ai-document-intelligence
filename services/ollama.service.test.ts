@@ -38,6 +38,20 @@ describe("OllamaService.visionExtractText", () => {
     const [, body] = vi.mocked(axios.post).mock.calls[0] as [string, { model: string }];
     expect(body.model).toBe("custom-vision-model:7b");
   });
+
+  it("scales the request timeout with the number of images, not a fixed ceiling", async () => {
+    vi.mocked(axios.post).mockResolvedValue({ data: { message: { content: "text" } } });
+
+    const service = new OllamaService();
+    await service.visionExtractText(["page1"]);
+    const [, , singlePageConfig] = vi.mocked(axios.post).mock.calls[0] as [string, unknown, { timeout: number }];
+
+    vi.mocked(axios.post).mockClear();
+    await service.visionExtractText(["page1", "page2", "page3"]);
+    const [, , threePageConfig] = vi.mocked(axios.post).mock.calls[0] as [string, unknown, { timeout: number }];
+
+    expect(threePageConfig.timeout).toBe(singlePageConfig.timeout * 3);
+  });
 });
 
 describe("OllamaService.classifyDocument", () => {

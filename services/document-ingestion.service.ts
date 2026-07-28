@@ -9,6 +9,7 @@ import { VisionExtractionService } from "@/services/vision-extraction.service";
 import { DocumentClassifierService } from "@/services/document-classifier.service";
 import type { DocumentClassification } from "@/schemas/document-classification.schema";
 import { extractPdfText } from "@/utils/pdf-text-extractor";
+import { isImageFile, isPdfFile } from "@/utils/document-file-type";
 import { mapInvoiceExtractionToInvoiceFields } from "@/schemas/invoice-mapper";
 import { InvoiceIndexingService } from "@/services/invoice-indexing.service";
 import type { IDocument } from "@/models/document.model";
@@ -47,8 +48,10 @@ export class DocumentIngestionService {
     let extractionDurationMs = 0;
     let requiresOcr = false;
     let pdfExtractionError: string | null = null;
+    const isPdf = isPdfFile(fileName);
+    const isImage = isImageFile(fileName);
 
-    if (absolutePath.toLowerCase().endsWith(".pdf")) {
+    if (isPdf) {
       let startTime = 0;
       try {
         startTime = Date.now();
@@ -112,6 +115,17 @@ export class DocumentIngestionService {
           error: pdfExtractionError,
         }));
       }
+    } else if (isImage) {
+      // Raw photos/scans have no text layer to parse — go straight to vision
+      // extraction below rather than decoding image bytes as UTF-8 "text".
+      requiresOcr = true;
+      numPages = 1;
+      console.info(JSON.stringify({
+        event: "image-ingestion",
+        filename: fileName,
+        fileSize,
+        status: "VISION_REQUIRED",
+      }));
     } else {
       text = fileBuffer.toString("utf-8");
       extractedText = text.trim();
@@ -123,7 +137,7 @@ export class DocumentIngestionService {
 
     if (initialQuality.score < env.DOCUMENT_QUALITY_THRESHOLD) {
       try {
-        const recoveredText = await this.visionExtractionService.extractText(fileBuffer);
+        const recoveredText = await this.visionExtractionService.extractText(fileBuffer, isPdf);
         const recoveredQuality = this.documentQualityService.assess(recoveredText, numPages ?? 1);
 
         if (recoveredText && recoveredQuality.score > initialQuality.score) {
