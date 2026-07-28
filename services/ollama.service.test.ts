@@ -103,6 +103,51 @@ describe("OllamaService.extractInvoiceData", () => {
     expect(outcome.data?.supplier.address.raw).toBeNull();
     expect(outcome.data?.customer.address.raw).toBe("Coimbatore, Tamil Nadu, India");
   });
+
+  it("drops hallucinated tax entries with no rate and no real amount, keeping genuine ones", async () => {
+    vi.mocked(axios.post).mockResolvedValue({
+      data: {
+        message: {
+          content: JSON.stringify(
+            baseExtractionResponse({
+              taxes: [
+                { type: "GST", rate: 18, amount: 5310 },
+                { type: "CGST", rate: null, amount: null },
+                { type: "SGST", rate: null, amount: 0 },
+                { type: "Sales Tax", rate: null, amount: 0 },
+                { type: "duty", rate: null, amount: null },
+              ],
+            })
+          ),
+        },
+      },
+    });
+
+    const service = new OllamaService();
+    const outcome = await service.extractInvoiceData("some invoice text");
+
+    expect(outcome.success).toBe(true);
+    expect(outcome.data?.taxes).toEqual([{ type: "GST", rate: 18, amount: 5310 }]);
+  });
+
+  it("keeps a tax entry that has a rate but no amount", async () => {
+    vi.mocked(axios.post).mockResolvedValue({
+      data: {
+        message: {
+          content: JSON.stringify(
+            baseExtractionResponse({
+              taxes: [{ type: "VAT", rate: 12, amount: null }],
+            })
+          ),
+        },
+      },
+    });
+
+    const service = new OllamaService();
+    const outcome = await service.extractInvoiceData("some invoice text");
+
+    expect(outcome.data?.taxes).toEqual([{ type: "VAT", rate: 12, amount: null }]);
+  });
 });
 
 describe("OllamaService.classifyDocument", () => {

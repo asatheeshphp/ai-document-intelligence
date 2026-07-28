@@ -31,12 +31,28 @@ function sanitizeAddressRaw(raw: string | null): string | null {
   return looksLikeBodyDump ? null : raw;
 }
 
+// The prompt's tax rule used to list example tax type names (GST, CGST, SGST, ...) and
+// qwen2.5:1.5b treated that list as a checklist to always fill in, producing a hallucinated
+// entry per named type with no rate and either no amount or a zero amount, regardless of
+// whether that tax actually appears on the invoice. These carry no real information but
+// still get embedded and searched, and — like short template-y invoice text generally —
+// can score deceptively high in SigLIP2's similarity space, surfacing an unrelated
+// invoice's noise above genuinely relevant content. Prompt wording alone didn't fully
+// stop it (same lesson as sanitizeAddressRaw above), so drop any tax entry with no rate
+// and no real (non-zero) amount — there's nothing there worth keeping or searching on.
+function isMeaninglessTaxEntry(tax: InvoiceExtraction["taxes"][number]): boolean {
+  const hasRate = tax.rate != null;
+  const hasRealAmount = tax.amount != null && tax.amount !== 0;
+  return !hasRate && !hasRealAmount;
+}
+
 function sanitizeInvoiceExtraction(data: InvoiceExtraction): InvoiceExtraction {
   return {
     ...data,
     supplier: { ...data.supplier, address: { ...data.supplier.address, raw: sanitizeAddressRaw(data.supplier.address.raw) } },
     customer: { ...data.customer, address: { ...data.customer.address, raw: sanitizeAddressRaw(data.customer.address.raw) } },
     shipping: { ...data.shipping, address: { ...data.shipping.address, raw: sanitizeAddressRaw(data.shipping.address.raw) } },
+    taxes: data.taxes.filter((tax) => !isMeaninglessTaxEntry(tax)),
   };
 }
 
@@ -45,8 +61,8 @@ function buildExtractionPrompt(documentText: string): string {
 
 Rules:
 - If a value cannot be found in the text, use null for scalar fields or an empty array for list fields. Never guess or invent a value.
-- Extract every line item and every tax line (GST, CGST, SGST, IGST, VAT, sales tax, duty, etc.), and every reference number you can find.
-- The "taxes" array must contain ONLY actual tax/levy line items. Never include the subtotal, discount, shipping charge, or grand/total payable amount as a "taxes" entry — those belong solely in "totals".
+- Extract every line item and every reference number you can find.
+- The "taxes" array must contain ONLY tax/levy lines that actually appear, printed, in the invoice text below — GST, CGST, SGST, IGST, VAT, sales tax, and duty are only examples of what a tax line might be called, NOT a checklist to fill in. Do not add an entry for a tax type just because it's a common one; a tax type not printed anywhere in the text must not appear in "taxes" at all. Never include the subtotal, discount, shipping charge, or grand/total payable amount as a "taxes" entry — those belong solely in "totals".
 - Ignore any stray formatting artifacts in the source text (e.g. leftover HTML-like tags such as "<b>" or "</b>") — treat them as if they were not there and extract only the real label and value.
 - Put any clearly labeled invoice data that doesn't fit the named fields into "additionalFields" as key-value pairs (e.g. project code, department, delivery date). Leave it as an empty object if there is nothing extra.
 - Numbers must be plain numbers, without currency symbols or thousands separators.
