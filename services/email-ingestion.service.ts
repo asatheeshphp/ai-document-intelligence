@@ -30,6 +30,13 @@ function isMatchingAttachment(filename: string | undefined): boolean {
   return MATCHING_EXTENSIONS.includes(ext);
 }
 
+// No filter configured means every subject passes -- today's behavior, unchanged.
+function subjectMatches(subject: string | undefined, filter: string | undefined): boolean {
+  if (!filter) return true;
+  if (!subject) return false;
+  return subject.toLowerCase().includes(filter.toLowerCase());
+}
+
 export interface EmailCheckError {
   messageUid: number;
   error: string;
@@ -66,7 +73,10 @@ export class EmailIngestionService {
    * duplicated here). Marks a message \Seen once its attachments are safely on disk --
    * not after extraction succeeds -- so a slow or failed extraction doesn't cause the
    * same email to be re-downloaded on every subsequent check. One message failing is
-   * recorded and skipped; it does not abort the rest of the batch.
+   * recorded and skipped; it does not abort the rest of the batch. If EMAIL_SUBJECT_FILTER
+   * is set, only messages whose subject contains it (case-insensitive) are considered --
+   * everything else is marked read and skipped, same as a message with no matching
+   * attachment.
    */
   async checkInbox(): Promise<EmailCheckResult> {
     const config = getEmailEnv();
@@ -92,7 +102,12 @@ export class EmailIngestionService {
 
         for (const uid of uids) {
           try {
-            const ingested = await this.processMessage(uid, client, config.EMAIL_ATTACHMENT_DIR);
+            const ingested = await this.processMessage(
+              uid,
+              client,
+              config.EMAIL_ATTACHMENT_DIR,
+              config.EMAIL_SUBJECT_FILTER
+            );
             if (ingested > 0) {
               result.emailsWithAttachments += 1;
               result.documentsIngested += ingested;
@@ -114,13 +129,24 @@ export class EmailIngestionService {
     return result;
   }
 
-  private async processMessage(uid: number, client: ImapClient, attachmentDir: string): Promise<number> {
+  private async processMessage(
+    uid: number,
+    client: ImapClient,
+    attachmentDir: string,
+    subjectFilter: string | undefined
+  ): Promise<number> {
     const fetched = await client.fetchOne(String(uid), { source: true }, { uid: true });
     if (!fetched || !fetched.source) {
       throw new Error(`Message UID ${uid} had no source content to parse.`);
     }
 
     const parsed = await this.parseMail(fetched.source);
+
+    if (!subjectMatches(parsed.subject, subjectFilter)) {
+      await client.messageFlagsAdd(uid, ["\\Seen"], { uid: true });
+      return 0;
+    }
+
     const attachments = (parsed.attachments ?? []).filter((attachment) => isMatchingAttachment(attachment.filename));
 
     if (attachments.length === 0) {

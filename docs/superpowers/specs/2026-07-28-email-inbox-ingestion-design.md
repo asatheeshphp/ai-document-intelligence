@@ -43,6 +43,12 @@ export class EmailIngestionService {
   the original flow's "read unread emails," and naturally avoids reprocessing the same
   message on every manual trigger once it's marked read.
 - For each unread message:
+  - If `EMAIL_SUBJECT_FILTER` is set, only messages whose subject contains it
+    (case-insensitive substring match, not a prefix) are considered — added after initial
+    build, per explicit request, once real usage showed every unread message being a
+    candidate was too broad. Unset (the default) means every unread message is still a
+    candidate, preserving today's behavior. A non-matching message is marked read and
+    skipped, same treatment as one with no matching attachment below — not an error.
   - Parses attachments; keeps only PDF and image (`.jpg`/`.jpeg`/`.png`) attachments —
     matches what `DocumentIngestionService` already supports end to end. Anything else
     attached is ignored, not downloaded, not recorded as an error.
@@ -131,9 +137,7 @@ No changes to `models/email.model.ts` — the existing schema already fits.
 - Scheduled/background polling — manual trigger only, per explicit decision.
 - Any attachment type beyond PDF/image — matches existing extraction capability, not
   arbitrarily expanded.
-- Sender/subject filtering (e.g. "only if subject contains 'invoice'") — not requested;
-  every unread message with a PDF/image attachment is a candidate. Can be added later as
-  a filter if false positives (unrelated PDFs) turn out to be a real problem in practice.
+- Sender filtering — not requested; every sender is treated equally.
 - Marking non-matching unread mail read is in scope (see above) but deleting/moving
   emails, or writing back to the mailbox in any way beyond the `\Seen` flag, is not.
 

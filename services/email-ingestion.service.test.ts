@@ -183,4 +183,48 @@ describe("EmailIngestionService.checkInbox", () => {
     expect(result.errors).toEqual([{ messageUid: 501, error: "IMAP fetch failed" }]);
     expect(result.documentsIngested).toBe(1);
   });
+
+  it("skips a message whose subject doesn't match EMAIL_SUBJECT_FILTER, even with a matching attachment", async () => {
+    vi.stubEnv("EMAIL_SUBJECT_FILTER", "invoice");
+    const client = fakeImapClient({
+      search: vi.fn().mockResolvedValue([601]),
+      fetchOne: vi.fn().mockResolvedValue({ source: Buffer.from("raw-mime") }),
+    });
+    const repository = fakeRepository();
+    const documentIngestionService = fakeDocumentIngestionService();
+    const parseMail = vi.fn().mockResolvedValue({
+      messageId: "<msg-601@techgrit.com>",
+      subject: "Weekly team newsletter",
+      attachments: [{ filename: "report.pdf", content: Buffer.from("pdf-bytes") }],
+    });
+
+    const service = new EmailIngestionService(repository, documentIngestionService, () => client, parseMail);
+    const result = await service.checkInbox();
+
+    expect(result.emailsWithAttachments).toBe(0);
+    expect(repository.createEmail).not.toHaveBeenCalled();
+    expect(documentIngestionService.processLocalDocument).not.toHaveBeenCalled();
+    expect(client.messageFlagsAdd).toHaveBeenCalledWith(601, ["\\Seen"], { uid: true });
+  });
+
+  it("processes a message when the subject contains the filter, case-insensitively, anywhere in the string", async () => {
+    vi.stubEnv("EMAIL_SUBJECT_FILTER", "invoice");
+    const client = fakeImapClient({
+      search: vi.fn().mockResolvedValue([602]),
+      fetchOne: vi.fn().mockResolvedValue({ source: Buffer.from("raw-mime") }),
+    });
+    const repository = fakeRepository();
+    const documentIngestionService = fakeDocumentIngestionService();
+    const parseMail = vi.fn().mockResolvedValue({
+      messageId: "<msg-602@techgrit.com>",
+      subject: "Please see attached INVOICE for July",
+      attachments: [{ filename: "report.pdf", content: Buffer.from("pdf-bytes") }],
+    });
+
+    const service = new EmailIngestionService(repository, documentIngestionService, () => client, parseMail);
+    const result = await service.checkInbox();
+
+    expect(result.documentsIngested).toBe(1);
+    expect(documentIngestionService.processLocalDocument).toHaveBeenCalledTimes(1);
+  });
 });

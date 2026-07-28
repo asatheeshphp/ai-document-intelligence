@@ -158,6 +158,9 @@ EMAIL_IMAP_HOST=outlook.office365.com
 EMAIL_IMAP_PORT=993
 EMAIL_IMAP_USER=you@techgrit.com
 EMAIL_IMAP_PASSWORD=your-app-password
+# EMAIL_SUBJECT_FILTER=invoice   # optional -- only process messages whose subject
+                                 # contains this (case-insensitive); unset means every
+                                 # unread message with a matching attachment qualifies
 ```
 
 Then trigger a check manually (there's no background poller — call this endpoint

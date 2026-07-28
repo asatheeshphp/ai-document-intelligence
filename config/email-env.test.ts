@@ -40,4 +40,21 @@ describe("getEmailEnv", () => {
 
     expect(getEmailEnv().EMAIL_IMAP_PORT).toBe(143);
   });
+
+  it("leaves EMAIL_SUBJECT_FILTER undefined when not set", () => {
+    vi.stubEnv("EMAIL_IMAP_HOST", "outlook.office365.com");
+    vi.stubEnv("EMAIL_IMAP_USER", "someone@techgrit.com");
+    vi.stubEnv("EMAIL_IMAP_PASSWORD", "app-password");
+
+    expect(getEmailEnv().EMAIL_SUBJECT_FILTER).toBeUndefined();
+  });
+
+  it("passes through an explicit EMAIL_SUBJECT_FILTER", () => {
+    vi.stubEnv("EMAIL_IMAP_HOST", "outlook.office365.com");
+    vi.stubEnv("EMAIL_IMAP_USER", "someone@techgrit.com");
+    vi.stubEnv("EMAIL_IMAP_PASSWORD", "app-password");
+    vi.stubEnv("EMAIL_SUBJECT_FILTER", "invoice");
+
+    expect(getEmailEnv().EMAIL_SUBJECT_FILTER).toBe("invoice");
+  });
 });

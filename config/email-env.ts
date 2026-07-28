@@ -9,6 +9,11 @@ const schema = z.object({
   EMAIL_IMAP_PASSWORD: z.string(),
   EMAIL_IMAP_MAILBOX: z.string().default("INBOX"),
   EMAIL_ATTACHMENT_DIR: z.string().default("data/incoming"),
+  // Optional. When unset, every unread message with a matching attachment is a
+  // candidate (today's behavior). When set, only messages whose subject contains this
+  // string (case-insensitive) are considered -- others are marked read and skipped,
+  // same as a message with no matching attachment.
+  EMAIL_SUBJECT_FILTER: z.string().optional(),
 });
 
 export type EmailEnv = z.infer<typeof schema>;
