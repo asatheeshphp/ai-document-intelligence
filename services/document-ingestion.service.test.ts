@@ -16,13 +16,20 @@ vi.mock("node:fs/promises", () => ({
   },
 }));
 
-function fakeRepository(): ProcessingRepository {
+function fakeRepository(overrides: Record<string, unknown> = {}): ProcessingRepository {
   return {
+    listDocuments: vi.fn().mockResolvedValue([]),
+    deleteChunksByDocumentId: vi.fn().mockResolvedValue(undefined),
+    deleteEmbeddingsByDocumentId: vi.fn().mockResolvedValue(undefined),
+    deleteInvoicesByDocumentId: vi.fn().mockResolvedValue(undefined),
+    deleteExtractionsByDocumentId: vi.fn().mockResolvedValue(undefined),
+    deleteDocumentById: vi.fn().mockResolvedValue(undefined),
     createEmail: vi.fn().mockResolvedValue({ _id: new Types.ObjectId() }),
     createDocument: vi.fn().mockResolvedValue({ _id: new Types.ObjectId() }),
     updateDocumentStatus: vi.fn().mockResolvedValue(undefined),
     createExtraction: vi.fn().mockResolvedValue({ _id: new Types.ObjectId() }),
     createInvoice: vi.fn().mockResolvedValue({ _id: new Types.ObjectId() }),
+    ...overrides,
   } as unknown as ProcessingRepository;
 }
 
@@ -67,5 +74,50 @@ describe("DocumentIngestionService.processLocalDocument — image files", () => 
     // UTF-8 decoding of the JPEG's binary bytes.
     const createDocumentCall = vi.mocked(repository.createDocument).mock.calls[0][0];
     expect(createDocumentCall.extractedText).toBe("Invoice Number: INV-9001\nVendor: GreenLeaf");
+  });
+});
+
+describe("DocumentIngestionService.processLocalDocument — re-ingestion", () => {
+  it("deletes any prior document/invoice/chunks/embeddings for the same source path before creating new ones", async () => {
+    const previousDocumentId = new Types.ObjectId();
+    const repository = fakeRepository({
+      listDocuments: vi.fn().mockResolvedValue([{ _id: previousDocumentId }]),
+    });
+
+    const visionExtractionService = {
+      extractText: vi.fn().mockResolvedValue("Invoice Number: INV-9002"),
+    } as unknown as VisionExtractionService;
+
+    const documentClassifierService = {
+      classify: vi.fn().mockResolvedValue({ documentType: "INVOICE", confidence: 0.9 }),
+    } as unknown as DocumentClassifierService;
+
+    const ollamaService = {
+      extractInvoiceData: vi.fn().mockResolvedValue({ success: false, data: null, raw: "", error: "n/a" }),
+    } as unknown as OllamaService;
+
+    const indexingService = {
+      replaceChunksAndEmbeddings: vi.fn().mockResolvedValue(undefined),
+    } as unknown as InvoiceIndexingService;
+
+    const service = new DocumentIngestionService(
+      repository,
+      ollamaService,
+      indexingService,
+      new DocumentQualityService(),
+      visionExtractionService,
+      documentClassifierService
+    );
+
+    await service.processLocalDocument({ sourcePath: "data/samples/invoice.jpg" });
+
+    expect(repository.listDocuments).toHaveBeenCalledWith(
+      expect.objectContaining({ "metadata.sourcePath": expect.stringContaining("invoice.jpg") })
+    );
+    expect(repository.deleteChunksByDocumentId).toHaveBeenCalledWith(previousDocumentId);
+    expect(repository.deleteEmbeddingsByDocumentId).toHaveBeenCalledWith(previousDocumentId);
+    expect(repository.deleteInvoicesByDocumentId).toHaveBeenCalledWith(previousDocumentId);
+    expect(repository.deleteExtractionsByDocumentId).toHaveBeenCalledWith(previousDocumentId);
+    expect(repository.deleteDocumentById).toHaveBeenCalledWith(previousDocumentId);
   });
 });

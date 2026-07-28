@@ -54,6 +54,57 @@ describe("OllamaService.visionExtractText", () => {
   });
 });
 
+describe("OllamaService.extractInvoiceData", () => {
+  beforeEach(() => {
+    vi.mocked(axios.post).mockReset();
+  });
+
+  const emptyAddress = { raw: null, street: null, city: null, state: null, postalCode: null, country: null };
+  const emptyParty = { name: null, address: emptyAddress, taxId: null, email: null, phone: null };
+
+  function baseExtractionResponse(overrides: Record<string, unknown> = {}) {
+    return {
+      invoice: { invoiceNumber: null, invoiceDate: null, dueDate: null, poNumber: null, currency: null, paymentTerms: null },
+      supplier: emptyParty,
+      customer: emptyParty,
+      shipping: { address: emptyAddress, method: null, trackingNumber: null },
+      lineItems: [],
+      taxes: [],
+      totals: { subtotal: null, totalTax: null, discount: null, shippingCharge: null, grandTotal: null, amountInWords: null },
+      bankDetails: { bankName: null, accountName: null, accountNumber: null, ifscCode: null, swiftCode: null, branch: null },
+      notes: null,
+      references: [],
+      additionalFields: {},
+      ...overrides,
+    };
+  }
+
+  it("nulls out an address.raw that looks like the whole invoice body was dumped into it", async () => {
+    const bodyDump =
+      "DELIVERY & TRANSPORT CHARGES INVOICE\nInvoice No: EXL-2026-2048\nSubtotal 29500\nGST (18%) 5310\nTotal Payable 34810\n";
+
+    vi.mocked(axios.post).mockResolvedValue({
+      data: {
+        message: {
+          content: JSON.stringify(
+            baseExtractionResponse({
+              supplier: { ...emptyParty, address: { ...emptyAddress, raw: bodyDump } },
+              customer: { ...emptyParty, address: { ...emptyAddress, raw: "Coimbatore, Tamil Nadu, India" } },
+            })
+          ),
+        },
+      },
+    });
+
+    const service = new OllamaService();
+    const outcome = await service.extractInvoiceData("some invoice text");
+
+    expect(outcome.success).toBe(true);
+    expect(outcome.data?.supplier.address.raw).toBeNull();
+    expect(outcome.data?.customer.address.raw).toBe("Coimbatore, Tamil Nadu, India");
+  });
+});
+
 describe("OllamaService.classifyDocument", () => {
   beforeEach(() => {
     vi.mocked(axios.post).mockReset();

@@ -42,6 +42,21 @@ export class DocumentIngestionService {
     const fileSize = fileBuffer.length;
     const fileName = path.basename(absolutePath);
 
+    // Re-ingesting the same source file (e.g. re-running /api/documents/latest, or
+    // testing the same sample repeatedly) previously created a brand-new Document +
+    // Invoice + chunks + embeddings every time, leaving old copies of the same invoice
+    // behind — they then all surfaced together in search as confusing near-duplicate
+    // results. Replace any prior ingestion of this exact path instead of stacking a new
+    // one on top.
+    const previousDocuments = await this.repository.listDocuments({ "metadata.sourcePath": absolutePath });
+    for (const previousDocument of previousDocuments) {
+      await this.repository.deleteChunksByDocumentId(previousDocument._id);
+      await this.repository.deleteEmbeddingsByDocumentId(previousDocument._id);
+      await this.repository.deleteInvoicesByDocumentId(previousDocument._id);
+      await this.repository.deleteExtractionsByDocumentId(previousDocument._id);
+      await this.repository.deleteDocumentById(previousDocument._id);
+    }
+
     let text = "";
     let extractedText: string | undefined;
     let numPages: number | null = null;

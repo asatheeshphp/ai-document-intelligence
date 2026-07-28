@@ -16,6 +16,30 @@ import {
 // multiple images in a single /api/chat call, with headroom over the measured value.
 const VISION_TIMEOUT_PER_IMAGE_MS = 400000;
 
+// Small chat models (e.g. qwen2.5:1.5b) don't reliably follow the prompt's instruction
+// to leave "address.raw" null when no real address is present — observed in practice
+// dumping the entire invoice body (line items, totals, remarks) into it instead. A real
+// postal address is short and rarely spans more than one or two lines, so anything
+// implausibly long or multi-line is treated as a body-dump and nulled out rather than
+// trusted, regardless of what the model returned.
+const MAX_PLAUSIBLE_ADDRESS_LENGTH = 120;
+
+function sanitizeAddressRaw(raw: string | null): string | null {
+  if (!raw) return raw;
+  const newlineCount = raw.match(/\n/g)?.length ?? 0;
+  const looksLikeBodyDump = raw.length > MAX_PLAUSIBLE_ADDRESS_LENGTH || newlineCount >= 2;
+  return looksLikeBodyDump ? null : raw;
+}
+
+function sanitizeInvoiceExtraction(data: InvoiceExtraction): InvoiceExtraction {
+  return {
+    ...data,
+    supplier: { ...data.supplier, address: { ...data.supplier.address, raw: sanitizeAddressRaw(data.supplier.address.raw) } },
+    customer: { ...data.customer, address: { ...data.customer.address, raw: sanitizeAddressRaw(data.customer.address.raw) } },
+    shipping: { ...data.shipping, address: { ...data.shipping.address, raw: sanitizeAddressRaw(data.shipping.address.raw) } },
+  };
+}
+
 function buildExtractionPrompt(documentText: string): string {
   return `You are an expert invoice data extraction assistant. Extract ALL available information from the invoice text below into the required JSON structure.
 
@@ -26,6 +50,7 @@ Rules:
 - Ignore any stray formatting artifacts in the source text (e.g. leftover HTML-like tags such as "<b>" or "</b>") — treat them as if they were not there and extract only the real label and value.
 - Put any clearly labeled invoice data that doesn't fit the named fields into "additionalFields" as key-value pairs (e.g. project code, department, delivery date). Leave it as an empty object if there is nothing extra.
 - Numbers must be plain numbers, without currency symbols or thousands separators.
+- An "address.raw" field must contain ONLY that party's physical postal address lines (street, city, state, postal code, country) — nothing else. Never copy invoice numbers, dates, GSTIN/tax IDs, vehicle/trip/driver details, charge/line-item tables, totals, delivery remarks, or any other section of the document into an address field, even if no true address is present in the text. If no physical address can be found for a party, set "address.raw" to null rather than filling it with unrelated document text.
 
 Invoice text:
 """
@@ -95,7 +120,7 @@ export class OllamaService {
       return { raw, success: false, data: null, error: result.error.message };
     }
 
-    return { raw, success: true, data: result.data };
+    return { raw, success: true, data: sanitizeInvoiceExtraction(result.data) };
   }
 
   async classifyDocument(
