@@ -3,7 +3,7 @@ import { OllamaService } from "@/services/ollama.service";
 import { SpendQueryService, type VendorSpendSummary } from "@/services/spend-query.service";
 import { ChatIntentService } from "@/services/chat-intent.service";
 import { ProcessingRepository } from "@/repositories/processing.repository";
-import { lexicalOverlapScore, hasMeaningfulTokens } from "@/utils/lexical-score";
+import { hasMeaningfulTokens, extractMeaningfulTokens } from "@/utils/lexical-score";
 import type { SearchResultItem } from "@/services/search.service";
 import type { ChatIntent } from "@/schemas/chat-intent.schema";
 
@@ -48,6 +48,23 @@ const MIN_SIGNIFICANT_NUMBER = 10;
 // note on why it retries via translation) -- rejecting on overlap here would throw away
 // exactly the recall that fallback exists to protect.
 const PLAIN_ASCII_PATTERN = /^[\x00-\x7F]*$/;
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Confirmed live: reusing lexicalOverlapScore's raw-substring matching for this check
+// let the filler word "all" (from "get all internet related invoices") count as a
+// "match" purely because it's a substring of "allowance" in an unrelated line item --
+// silently defeating the whole premise check even though "internet" itself, the
+// question's actual subject, never appeared anywhere in the invoice. Word-boundary
+// matching (\bword\b) closes that gap: substring matching stays fine for
+// lexicalOverlapScore's ranking use case (e.g. "keyboards" matching "keyboard"), but a
+// veto check needs to know a word actually occurs, not merely that its letters do.
+function questionSharesVocabularyWith(question: string, invoiceText: string): boolean {
+  const tokens = extractMeaningfulTokens(question);
+  return tokens.some((token) => new RegExp(`\\b${escapeRegExp(token)}s?\\b`, "i").test(invoiceText));
+}
 
 function extractSignificantNumbers(text: string): number[] {
   const matches = text.match(/\d[\d,]*\.?\d*/g) ?? [];
@@ -278,7 +295,7 @@ export class RagService {
     const fullText = chunks.map((chunk) => chunk.text).join("\n");
 
     if (PLAIN_ASCII_PATTERN.test(question) && hasMeaningfulTokens(question)) {
-      if (lexicalOverlapScore(question, fullText) === 0) return "premise";
+      if (!questionSharesVocabularyWith(question, fullText)) return "premise";
     }
 
     const answerNumbers = extractSignificantNumbers(answer);

@@ -58,6 +58,16 @@ export function hasMeaningfulTokens(query: string): boolean {
   return tokenize(query).length > 0;
 }
 
+// Exposed for rag.service.ts's premise-grounding check, which needs the same
+// stopword/bare-year-filtered token list this module already uses for ranking, but
+// can't reuse lexicalOverlapScore's raw-substring matching for that check -- see its
+// own comment for why (a filler word like "all" matching inside "allowance" is fine as
+// a small ranking nudge, but wrongly defeats a veto check meant to catch zero real
+// topical overlap).
+export function extractMeaningfulTokens(query: string): string[] {
+  return tokenize(query);
+}
+
 export function lexicalOverlapScore(query: string, text: string): number {
   const normalizedQuery = query.trim().toLowerCase();
   const normalizedText = text.toLowerCase();

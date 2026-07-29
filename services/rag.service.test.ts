@@ -350,6 +350,46 @@ describe("RagService.answer — grounding verification", () => {
     expect(result.answer).toMatch(/doesn't appear to mention what you asked about/);
   });
 
+  it("still rejects the mismatch when a filler word in the question happens to be a substring of an unrelated word in the invoice", async () => {
+    // Reproduces the second confirmed live bug: "get all internet related invoices" was
+    // NOT rejected by the first version of this check, because the filler word "all"
+    // scored a false substring match inside "allowance" in one of the invoice's line
+    // items -- alone enough to make lexicalOverlapScore's raw fraction nonzero, even
+    // though "internet" (the actual subject) never appears anywhere. Word-boundary
+    // matching must not count "all" as present just because "allowance" is.
+    const searchResults = [
+      fakeSearchResult({
+        invoiceId: "inv-1",
+        invoice: { invoiceNumber: "EXL-2026-2048", vendorName: "Express Cargo & Logistics Solutions" },
+        chunkText: "Supplier: Express Cargo & Logistics Solutions",
+      }),
+    ];
+    const searchService = { search: vi.fn().mockResolvedValue({ results: searchResults }) } as unknown as SearchService;
+    const ollamaService = {
+      chatCompletion: vi
+        .fn()
+        .mockResolvedValue(
+          "Express Cargo & Logistics Solutions (EXL-2026-2048) is the only invoice related to internet services."
+        ),
+    } as unknown as OllamaService;
+    const spendQueryService = { getVendorSpendSummary: vi.fn() } as unknown as SpendQueryService;
+    const chatIntentService = fakeChatIntentService({ type: "RETRIEVAL" });
+    const repository = fakeRepository({
+      findChunksByInvoiceId: vi.fn().mockResolvedValue([
+        { chunkType: "header", text: "Supplier: Express Cargo & Logistics Solutions" },
+        {
+          chunkType: "line_items",
+          text: "Driver Allowance 2 Days, qty 1, unit price 1000, amount 1000",
+        },
+      ]),
+    });
+
+    const service = new RagService(searchService, ollamaService, spendQueryService, chatIntentService, repository);
+    const result = await service.answer({ question: "get all internet related invoices" });
+
+    expect(result.answer).toMatch(/doesn't appear to mention what you asked about/);
+  });
+
   it("keeps the answer when the question's key terms do appear in the named invoice's own content", async () => {
     const searchResults = [
       fakeSearchResult({

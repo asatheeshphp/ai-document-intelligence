@@ -246,6 +246,41 @@ prompt only).
       (4148.2), and "how much paid for logistics?" still returns a genuinely-grounded
       figure from Express Cargo's own data.
 
+### Task 9: Fix a substring false-match that silently defeated Task 8's premise check — found via ad-hoc live testing right after Task 8 shipped
+
+**Files:** `services/rag.service.ts`, `services/rag.service.test.ts`, `utils/lexical-score.ts`
+
+- [x] Asking "get all internet related invoices" immediately after Task 8 still returned
+      a confident wrong answer naming Express Cargo as "the only invoice related to
+      Internet-related services" — the premise check that should have caught this
+      didn't fire. Root cause debugged directly against the real invoice text (not
+      assumed): Task 8's check reused `lexicalOverlapScore`'s raw substring matching,
+      and the filler word "all" scored a false match purely because it's a substring of
+      "allowance" in one of the invoice's own line items — that alone made the overlap
+      score nonzero (0.25), silently passing the check even though "internet" (the
+      question's actual subject) never appeared anywhere in the invoice.
+- [x] Fix: the premise check now does its own word-boundary-aware matching (`\bword\b`)
+      instead of reusing `lexicalOverlapScore`'s substring logic. Substring matching
+      stays exactly as-is for `lexicalOverlapScore` itself and everything that depends on
+      it (`SearchService`'s ranking boost) — untouched, so no existing search query's
+      behavior changes. The fix is scoped entirely to this one veto check in
+      `RagService`.
+- [x] Added `extractMeaningfulTokens` export to `utils/lexical-score.ts` (reuses the
+      same stopword/bare-year-filtered tokenizer already relied on for ranking, so no
+      duplicated logic) so `RagService` can run its own boundary-matching predicate over
+      the same token list rather than lexicalOverlapScore's fractional scoring.
+- [x] 1 new regression test reproducing this exact case (a filler word that's a
+      substring of an unrelated word in the invoice must not count as a match). 15/15
+      `rag.service.test.ts` tests passing; all Task 7/8 tests re-verified still passing
+      unchanged.
+- [x] `npx tsc --noEmit` clean; `npm test` at 127/128 (same pre-existing, unrelated
+      missing-sample-PDF failure noted in Task 5).
+- [x] Live-verified against the real dev server: "get all internet related invoices" and
+      "how much paid for internet 2026?" both now correctly return the premise-mismatch
+      fallback. Re-confirmed all previously-correct examples still work exactly as
+      before: invoice 27639's grand total, the Express Cargo aggregation query (by name
+      and by "logistics"), all unchanged.
+
 ---
 
 ## Out of scope for this plan (explicit)
