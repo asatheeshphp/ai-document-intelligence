@@ -307,31 +307,47 @@ export class RagService {
 
   /**
    * Ensures each distinct invoice among the retrieved results also has its "payment"
-   * chunk (the one holding the actual totals) available to the model, even if search's
-   * per-invoice cap meant a different chunk (e.g. the header) won the ranking for that
-   * invoice. Only adds a chunk that isn't already present -- never removes or reorders
-   * what search actually ranked.
+   * chunk (the one holding the actual totals) AND its "header" chunk (invoice number,
+   * PO number, due date, currency, payment terms) available to the model, even if
+   * search's per-invoice cap meant a different chunk won the ranking for that invoice.
+   *
+   * Header was added after a confirmed live case distinct from the original payment-
+   * chunk bug: asked for ABC Technologies' PO number, the model answered with its own
+   * invoice number (INV-2026-001) instead of the real PO number (PO-45879) -- not
+   * because it invented a number from nothing, but because its header chunk (the only
+   * chunk that actually contains "PO Number: PO-45879") never made it into context at
+   * all. Lacking the real data, it reused the only invoice-shaped identifier it had
+   * (its own citation label) as a plausible-looking guess. Same root shape as the
+   * payment-chunk gap, different field.
+   *
+   * Only adds a chunk that isn't already present -- never removes or reorders what
+   * search actually ranked.
    */
   private async augmentWithPaymentChunks(results: SearchResultItem[]): Promise<SearchResultItem[]> {
     const augmented = [...results];
     const distinctInvoices = getDistinctInvoices(results);
+    const requiredChunkTypes = ["payment", "header"] as const;
 
     for (const invoiceResult of distinctInvoices) {
-      const alreadyHasPaymentChunk = results.some(
-        (result) => result.invoiceId === invoiceResult.invoiceId && result.chunkType === "payment"
+      const presentChunkTypes = new Set(
+        results.filter((result) => result.invoiceId === invoiceResult.invoiceId).map((result) => result.chunkType)
       );
-      if (alreadyHasPaymentChunk) continue;
+      const missingChunkTypes = requiredChunkTypes.filter((chunkType) => !presentChunkTypes.has(chunkType));
+      if (missingChunkTypes.length === 0) continue;
 
       const chunks = await this.repository.findChunksByInvoiceId(invoiceResult.invoiceId);
-      const paymentChunk = chunks.find((chunk) => chunk.chunkType === "payment");
-      if (!paymentChunk) continue;
 
-      augmented.push({
-        ...invoiceResult,
-        chunkId: paymentChunk._id.toString(),
-        chunkType: "payment",
-        chunkText: paymentChunk.text,
-      });
+      for (const chunkType of missingChunkTypes) {
+        const chunk = chunks.find((candidate) => candidate.chunkType === chunkType);
+        if (!chunk) continue;
+
+        augmented.push({
+          ...invoiceResult,
+          chunkId: chunk._id.toString(),
+          chunkType,
+          chunkText: chunk.text,
+        });
+      }
     }
 
     return augmented;

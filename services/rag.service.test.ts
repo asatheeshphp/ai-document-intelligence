@@ -213,9 +213,10 @@ describe("RagService.answer — payment-chunk augmentation", () => {
     expect(promptSentToModel).toContain("Grand Total: 500.00");
   });
 
-  it("does not add a payment chunk if one was already retrieved", async () => {
+  it("does not re-fetch chunks when both required chunk types were already retrieved", async () => {
     const searchResults = [
       fakeSearchResult({ invoiceId: "inv-1", chunkType: "payment", chunkText: "Grand Total: 500.00" }),
+      fakeSearchResult({ invoiceId: "inv-1", chunkType: "header", chunkText: "Invoice Number: INV-1" }),
     ];
     const searchService = { search: vi.fn().mockResolvedValue({ results: searchResults }) } as unknown as SearchService;
     const ollamaService = { chatCompletion: vi.fn().mockResolvedValue("Synthesized answer") } as unknown as OllamaService;
@@ -227,8 +228,42 @@ describe("RagService.answer — payment-chunk augmentation", () => {
     const service = new RagService(searchService, ollamaService, spendQueryService, chatIntentService, repository);
     const result = await service.answer({ question: "What did Vendor Co bill?" });
 
-    expect(result.sources).toHaveLength(1);
+    expect(result.sources).toHaveLength(2);
     expect(findChunksByInvoiceId).not.toHaveBeenCalled();
+  });
+
+  it("adds the missing header chunk (PO number, due date) even when the payment chunk was already retrieved", async () => {
+    // Reproduces the confirmed live bug: asked for ABC Technologies' PO number, the
+    // model answered with its own invoice number instead -- not fabricated from
+    // nothing, but because the header chunk (the only one containing "PO Number:
+    // PO-45879") never made it into context, since a different chunk type won the
+    // per-invoice ranking slot.
+    const searchResults = [
+      fakeSearchResult({ invoiceId: "inv-1", chunkType: "payment", chunkText: "Grand Total: 47200" }),
+    ];
+    const searchService = { search: vi.fn().mockResolvedValue({ results: searchResults }) } as unknown as SearchService;
+    const ollamaService = { chatCompletion: vi.fn().mockResolvedValue("Synthesized answer") } as unknown as OllamaService;
+    const spendQueryService = { getVendorSpendSummary: vi.fn() } as unknown as SpendQueryService;
+    const chatIntentService = fakeChatIntentService({ type: "RETRIEVAL" });
+    const repository = fakeRepository({
+      findChunksByInvoiceId: vi.fn().mockResolvedValue([
+        {
+          chunkType: "header",
+          text: "Invoice Number: INV-1\nPO Number: PO-45879",
+          _id: { toString: () => "chunk-header" },
+        },
+        { chunkType: "payment", text: "Grand Total: 47200", _id: { toString: () => "chunk-payment" } },
+      ]),
+    });
+
+    const service = new RagService(searchService, ollamaService, spendQueryService, chatIntentService, repository);
+    const result = await service.answer({ question: "What is the PO number for Vendor Co?" });
+
+    expect(result.sources).toHaveLength(2);
+    expect(result.sources.some((s) => s.chunkType === "header" && s.chunkText.includes("PO-45879"))).toBe(true);
+
+    const promptSentToModel = (ollamaService.chatCompletion as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(promptSentToModel).toContain("PO-45879");
   });
 });
 
@@ -251,7 +286,9 @@ describe("RagService.answer — grounding verification", () => {
     const chatIntentService = fakeChatIntentService({ type: "RETRIEVAL" });
     const repository = fakeRepository({
       // Vendor Co's own chunks never mention 4148.20 anywhere.
-      findChunksByInvoiceId: vi.fn().mockResolvedValue([{ chunkType: "header", text: "Supplier: Vendor Co" }]),
+      findChunksByInvoiceId: vi.fn().mockResolvedValue([
+        { chunkType: "header", text: "Supplier: Vendor Co", _id: { toString: () => "chunk-header" } },
+      ]),
     });
 
     const service = new RagService(searchService, ollamaService, spendQueryService, chatIntentService, repository);
@@ -277,7 +314,7 @@ describe("RagService.answer — grounding verification", () => {
     const chatIntentService = fakeChatIntentService({ type: "RETRIEVAL" });
     const repository = fakeRepository({
       findChunksByInvoiceId: vi.fn().mockResolvedValue([
-        { chunkType: "header", text: "Supplier: Vendor Co" },
+        { chunkType: "header", text: "Supplier: Vendor Co", _id: { toString: () => "chunk-header" } },
         { chunkType: "payment", text: "Grand Total: 500.00", _id: { toString: () => "chunk-payment" } },
       ]),
     });
@@ -343,7 +380,7 @@ describe("RagService.answer — grounding verification", () => {
     const chatIntentService = fakeChatIntentService({ type: "RETRIEVAL" });
     const repository = fakeRepository({
       findChunksByInvoiceId: vi.fn().mockResolvedValue([
-        { chunkType: "header", text: "Supplier: Express Cargo & Logistics Solutions" },
+        { chunkType: "header", text: "Supplier: Express Cargo & Logistics Solutions", _id: { toString: () => "chunk-header" } },
         { chunkType: "payment", text: "Grand Total: 45810", _id: { toString: () => "chunk-payment" } },
       ]),
     });
@@ -381,7 +418,7 @@ describe("RagService.answer — grounding verification", () => {
     const chatIntentService = fakeChatIntentService({ type: "RETRIEVAL" });
     const repository = fakeRepository({
       findChunksByInvoiceId: vi.fn().mockResolvedValue([
-        { chunkType: "header", text: "Supplier: Express Cargo & Logistics Solutions" },
+        { chunkType: "header", text: "Supplier: Express Cargo & Logistics Solutions", _id: { toString: () => "chunk-header" } },
         {
           chunkType: "line_items",
           text: "Driver Allowance 2 Days, qty 1, unit price 1000, amount 1000",
@@ -411,7 +448,7 @@ describe("RagService.answer — grounding verification", () => {
     const chatIntentService = fakeChatIntentService({ type: "RETRIEVAL" });
     const repository = fakeRepository({
       findChunksByInvoiceId: vi.fn().mockResolvedValue([
-        { chunkType: "header", text: "Supplier: Express Cargo & Logistics Solutions" },
+        { chunkType: "header", text: "Supplier: Express Cargo & Logistics Solutions", _id: { toString: () => "chunk-header" } },
         { chunkType: "payment", text: "Grand Total: 45810", _id: { toString: () => "chunk-payment" } },
       ]),
     });
@@ -481,7 +518,7 @@ describe("RagService.answer — grounding verification", () => {
     const chatIntentService = fakeChatIntentService({ type: "RETRIEVAL" });
     const repository = fakeRepository({
       findChunksByInvoiceId: vi.fn().mockResolvedValue([
-        { chunkType: "header", text: "Supplier: SuperStore" },
+        { chunkType: "header", text: "Supplier: SuperStore", _id: { toString: () => "chunk-header" } },
         {
           chunkType: "line_items",
           text: "Chromcraft Table, with Bottom Storage, qty 3 price 4069.53",
@@ -523,7 +560,7 @@ describe("RagService.answer — grounding verification", () => {
     const chatIntentService = fakeChatIntentService({ type: "RETRIEVAL" });
     const repository = fakeRepository({
       findChunksByInvoiceId: vi.fn().mockResolvedValue([
-        { chunkType: "header", text: "Supplier: SuperStore" },
+        { chunkType: "header", text: "Supplier: SuperStore", _id: { toString: () => "chunk-header" } },
         {
           chunkType: "line_items",
           text: "Chromcraft Computer Table, with Bottom Storage, qty 3 amount 4069.53",
@@ -667,7 +704,7 @@ describe("RagService.answer — grounding verification", () => {
     const chatIntentService = fakeChatIntentService({ type: "RETRIEVAL" });
     const repository = fakeRepository({
       findChunksByInvoiceId: vi.fn().mockResolvedValue([
-        { chunkType: "header", text: "Invoice Number: EXL-2026-2048\nPO Number: PO-45879" },
+        { chunkType: "header", text: "Invoice Number: EXL-2026-2048\nPO Number: PO-45879", _id: { toString: () => "chunk-header" } },
         { chunkType: "supplier", text: "Supplier: Express Cargo & Logistics Solutions" },
         { chunkType: "payment", text: "Grand Total: 45810", _id: { toString: () => "chunk-payment" } },
       ]),
@@ -758,7 +795,7 @@ describe("RagService.answer — grounding verification", () => {
     const chatIntentService = fakeChatIntentService({ type: "RETRIEVAL" });
     const repository = fakeRepository({
       findChunksByInvoiceId: vi.fn().mockResolvedValue([
-        { chunkType: "header", text: "Supplier: ABC Technologies Pvt. Ltd." },
+        { chunkType: "header", text: "Supplier: ABC Technologies Pvt. Ltd.", _id: { toString: () => "chunk-header" } },
         { chunkType: "line_items", text: "Installation Service, qty 1, unit price 5000, amount 5000" },
       ]),
     });

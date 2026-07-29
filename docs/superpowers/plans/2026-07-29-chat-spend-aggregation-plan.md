@@ -519,6 +519,40 @@ prompt only).
       fabricated) -- this is a semantic mislabeling / retrieval-coverage issue, a
       different problem than identifier fabrication.
 
+### Task 15: Also guarantee the header chunk (PO number, due date) is in context, not just the payment chunk
+
+**Files:** `services/rag.service.ts`, `services/rag.service.test.ts`
+
+- [x] Asked for ABC Technologies' PO number, the model answered with its own invoice
+      number (INV-2026-001) instead of the real PO number (PO-45879). Traced precisely,
+      not assumed: the sources actually sent to the model were the "supplier" and
+      "payment" chunks -- the "header" chunk, the ONLY chunk containing "PO Number:
+      PO-45879", never made it into context at all, because a different chunk type won
+      that invoice's single per-invoice ranking slot (`MAX_RESULTS_PER_INVOICE`). Lacking
+      the real data, the model reused the only invoice-shaped identifier it had (its own
+      citation label) as a plausible-looking guess -- same root shape as Task 7's
+      original payment-chunk gap, different field.
+- [x] Fix: generalized `augmentWithPaymentChunks` from guaranteeing one chunk type
+      ("payment") to a small required set (`["payment", "header"]`) -- for each
+      distinct invoice, whichever of these types is missing from the retrieved results
+      gets fetched and appended, fetching each invoice's full chunk set once regardless
+      of how many types are missing. Purely additive, as before -- never removes or
+      reorders what search actually ranked.
+- [x] Updated one existing test whose premise no longer held (asserted zero re-fetch
+      when only the payment chunk was already present -- now also needs the header
+      chunk present to skip fetching) and added 1 new test reproducing the exact
+      reported bug (header chunk missing despite payment chunk present -- confirms the
+      PO number reaches the actual prompt sent to the model, not just the sources list).
+      8 existing test fixtures across the file needed a header-chunk mock's `_id` field
+      added, now that header augmentation runs unconditionally alongside payment
+      augmentation. 26/26 passing.
+- [x] `npx tsc --noEmit` clean; `npm test` at 151/152 (same pre-existing, unrelated
+      missing-sample-PDF failure noted in Task 5).
+- [x] Live-verified against the real dev server: "What is the PO number and grand total
+      for the ABC Technologies invoice?" now correctly answers "PO-45879" (previously
+      answered with the wrong, mislabeled invoice number). Re-confirmed invoice 27639's
+      total and the "internet 2026" premise-mismatch fallback are unaffected.
+
 ---
 
 ## Out of scope for this plan (explicit)
