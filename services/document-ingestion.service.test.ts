@@ -22,6 +22,8 @@ function fakeRepository(overrides: Record<string, unknown> = {}): ProcessingRepo
     deleteEmbeddingsByDocumentId: vi.fn().mockResolvedValue(undefined),
     deleteInvoicesByDocumentId: vi.fn().mockResolvedValue(undefined),
     deleteExtractionsByDocumentId: vi.fn().mockResolvedValue(undefined),
+    deleteDocumentById: vi.fn().mockResolvedValue(undefined),
+    deleteEmailById: vi.fn().mockResolvedValue(undefined),
     createEmail: vi.fn().mockResolvedValue({ _id: new Types.ObjectId() }),
     upsertDocumentBySourcePath: vi.fn().mockResolvedValue({ document: { _id: new Types.ObjectId() }, isNew: true }),
     updateDocumentStatus: vi.fn().mockResolvedValue(undefined),
@@ -275,6 +277,38 @@ describe("DocumentIngestionService.processLocalDocument — duplicate invoice ch
     expect(repository.createInvoice).not.toHaveBeenCalled();
     expect(result.invoice).toBeNull();
     expect(result.message).toMatch(/Duplicate invoice detected/);
+
+    // A brand-new Document/Email/Extraction were just created for this attempt and
+    // nothing else references them -- safe to clean up rather than leave orphaned rows.
+    expect(repository.deleteExtractionsByDocumentId).toHaveBeenCalledWith(existingDocumentId);
+    expect(repository.deleteDocumentById).toHaveBeenCalledWith(existingDocumentId);
+    expect(repository.deleteEmailById).toHaveBeenCalled();
+    expect(result.message).toMatch(/removed this attempt's Document\/Email\/Extraction records/);
+  });
+
+  it("does not delete anything when a reprocessed (not brand-new) document is flagged as a duplicate", async () => {
+    // Reprocessing an existing file that still matches another invoice's
+    // vendor/number/date: this Document has real prior history (its emailId was
+    // already reassigned to this run's Email row by the upsert) -- deleting it would
+    // destroy that, not just redundant data.
+    const existingDocumentId = new Types.ObjectId();
+    const otherDocumentId = new Types.ObjectId();
+    const repository = fakeRepository({
+      upsertDocumentBySourcePath: vi
+        .fn()
+        .mockResolvedValue({ document: { _id: existingDocumentId }, isNew: false }),
+      listInvoices: vi.fn().mockResolvedValue([{ documentId: otherDocumentId }]),
+    });
+
+    const service = buildService(repository);
+    const result = await service.processLocalDocument({ sourcePath: "data/samples/invoice-dup-reprocess.pdf" });
+
+    expect(result.invoice).toBeNull();
+    expect(result.message).toMatch(/Duplicate invoice detected/);
+    expect(result.message).not.toMatch(/removed this attempt's/);
+    expect(repository.deleteDocumentById).not.toHaveBeenCalled();
+    expect(repository.deleteEmailById).not.toHaveBeenCalled();
+    expect(repository.deleteExtractionsByDocumentId).not.toHaveBeenCalled();
   });
 
   it("creates the invoice normally when no duplicate exists", async () => {

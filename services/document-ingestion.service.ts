@@ -262,6 +262,25 @@ export class DocumentIngestionService {
       });
 
       if (duplicates.length > 0) {
+        let cleanedUp = false;
+
+        // Only safe to delete the Document/Email/Extraction just created for THIS
+        // attempt when the Document itself is brand new (isNew) -- nothing else
+        // references them yet. If the same file is being reprocessed (!isNew), this
+        // Document has real prior history (its emailId was already reassigned to this
+        // run's Email row by the upsert above) -- deleting would destroy that, not
+        // just redundant data, so it's left untouched in that case. A duplicate match
+        // is deterministic (exact vendor + invoice number + date), so there's nothing
+        // to review; it's safe to clean up rather than leave orphaned rows with no
+        // Invoice attached. The downloaded file on disk is deliberately left alone --
+        // only DB records are removed.
+        if (isNew) {
+          await this.repository.deleteExtractionsByDocumentId(document._id);
+          await this.repository.deleteDocumentById(document._id);
+          await this.repository.deleteEmailById(email._id);
+          cleanedUp = true;
+        }
+
         return {
           email,
           document,
@@ -271,7 +290,8 @@ export class DocumentIngestionService {
           message:
             `Duplicate invoice detected: an invoice numbered "${mappedFields.invoiceNumber}" from ` +
             `"${mappedFields.vendorName}" dated ${mappedFields.invoiceDate.toDateString()} already exists ` +
-            `(document ${duplicates[0].documentId}). Skipped creating a new Invoice record.`,
+            `(document ${duplicates[0].documentId}). Skipped creating a new Invoice record` +
+            (cleanedUp ? ", and removed this attempt's Document/Email/Extraction records." : "."),
         };
       }
     }

@@ -145,6 +145,12 @@ export class ProcessingRepository extends BaseRepository<unknown> {
     });
   }
 
+  async deleteEmailById(id: string | Types.ObjectId): Promise<void> {
+    return this.withConnection(async () => {
+      await Email.deleteOne({ _id: id }).exec();
+    });
+  }
+
   async createDocument(input: CreateDocumentInput): Promise<IDocument> {
     return this.withConnection(async () => {
       const document = await Document.create({
