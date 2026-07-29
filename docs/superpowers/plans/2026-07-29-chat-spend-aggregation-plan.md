@@ -611,6 +611,64 @@ prompt only).
       "summarize the total logistics amount" and "How much have I paid Express Cargo?"
       both correctly return the vendor total (45810.00) unaffected by the new intent.
 
+### Task 17: Two classifier fixes — "payment condition" misclassification, and per-invoice status lookup
+
+**Files:** `schemas/chat-intent.schema.ts`, `services/ollama.service.ts`,
+`services/ollama.service.test.ts`, `services/chat-intent.service.ts`,
+`services/chat-intent.service.test.ts`, `services/invoice-status-query.service.ts`,
+`services/invoice-status-query.service.test.ts`, `services/rag.service.ts`,
+`services/rag.service.test.ts`
+
+- [x] **"What is the payment condition?"** classified as `STATUS_FILTER(PAID)` instead
+      of `RETRIEVAL` -- confirmed live, deterministically (3/3): the model reads
+      "condition(s)" as if it meant "status", when in ordinary invoice English "payment
+      condition(s)" overwhelmingly means payment TERMS. Confirmed the boundary is
+      specifically this word -- "payment terms?", "payment due date?", and "payment
+      method?" all correctly stayed RETRIEVAL on the same live model. Fixed with a
+      deterministic override in `ChatIntentService` (same pattern as the earlier "paid
+      invoices" override, opposite direction): converts a STATUS_FILTER vote back to
+      RETRIEVAL when the question matches the "payment condition(s)" phrase, scoped
+      narrowly to that phrase so it doesn't affect any other STATUS_FILTER question.
+- [x] **Conversational continuity, partially addressed**: after two turns discussing
+      "EXL-2026-2048" specifically, "How much GST was charged?" silently answered about
+      a different invoice. Added `RagService.buildContextAwareSearchQuery` -- nudges
+      (does not filter) the search query toward the invoice named in the immediately
+      prior turn when the current question doesn't name one itself, only when that
+      turn names exactly one invoice (ambiguous or absent references leave the question
+      untouched). Live-verified this correctly re-ranks the right invoice's own chunks
+      to the top -- but also surfaced that the guaranteed-chunk-types list
+      (`payment`/`header`) doesn't include `taxes`, so a GST-specific follow-up can
+      still lack the right invoice's own tax breakdown. Flagged to the user, not yet
+      built (adding `"taxes"` to that list is the natural next step, same shape as
+      Tasks 7 and 15).
+- [x] **"What is the payment status of invoice EXL-2026-2048?"** ran the same blanket
+      "list every PAID invoice" query as "any paid invoices?" -- the invoice number was
+      extracted but never used, discarded entirely, silently answering about the wrong
+      thing (or nothing). Root cause: `STATUS_FILTER` only ever carried a `status`
+      field, with nowhere for a named invoice to go. Fix: added an optional
+      `invoiceNumber` field to the intent; `InvoiceStatusQueryService.getStatusForInvoiceNumber`
+      looks up that one invoice directly and reports its REAL current status --
+      deliberately ignoring whatever `status` the model guessed, since the question is
+      asking what the status IS, not testing a guess.
+- [x] Documented, not yet built: invoice-number extraction for this new field is
+      phrasing-dependent, not simply bare-numeric-vs-alphanumeric -- "what is the
+      payment status of invoice 27639?" extracts correctly, but "has invoice 27639 been
+      paid?" and "is 27639 paid?" don't. The originally reported case (`EXL-2026-2048`,
+      "what is the payment status of...") is fully fixed and live-verified; this is a
+      narrower, separate prompt-coverage gap flagged for a future fix.
+- [x] 8 new unit tests across the 4 files (payment-condition override + its
+      no-false-positive guard, invoiceNumber parsing, `getStatusForInvoiceNumber`'s
+      exact/case-insensitive matching + PENDING/overdue/PAID reporting + no-match case,
+      the per-invoice RagService branch ignoring the guessed status, the
+      context-aware-search-query nudge + its 3 no-op guard cases). 36/36 passing in
+      `rag.service.test.ts`.
+- [x] `npx tsc --noEmit` clean; `npm test` at 176/177 (same pre-existing, unrelated
+      missing-sample-PDF failure noted in Task 5).
+- [x] Live-verified against the real dev server: "what is the payment status of this
+      invoice: EXL-2026-2048" now correctly answers "unpaid and overdue (due
+      2026-07-22)", matching the real database record exactly. Re-confirmed "any unpaid
+      invoices?" and the "payment condition" fix are both unaffected.
+
 ---
 
 ## Out of scope for this plan (explicit)

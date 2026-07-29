@@ -28,7 +28,11 @@ function fakeRepository(overrides: Record<string, unknown> = {}): ProcessingRepo
 }
 
 function fakeInvoiceStatusQueryService(overrides: Record<string, unknown> = {}): InvoiceStatusQueryService {
-  return { listByStatus: vi.fn().mockResolvedValue([]), ...overrides } as unknown as InvoiceStatusQueryService;
+  return {
+    listByStatus: vi.fn().mockResolvedValue([]),
+    getStatusForInvoiceNumber: vi.fn().mockResolvedValue([]),
+    ...overrides,
+  } as unknown as InvoiceStatusQueryService;
 }
 
 function fakeLineItemAggregationService(overrides: Record<string, unknown> = {}): LineItemAggregationService {
@@ -867,6 +871,80 @@ describe("RagService.answer — status-filter path", () => {
     expect(result.answer).toBe("I couldn't find any overdue invoices.");
     expect(searchService.search).not.toHaveBeenCalled();
   });
+
+  it("looks up and reports a specific invoice's real status when the question names one, ignoring the model's guessed status", async () => {
+    // Reproduces the confirmed live bug: "what is the payment status of invoice
+    // EXL-2026-2048?" previously discarded the invoice number and ran the blanket
+    // "list every PAID invoice" query instead, answering "I couldn't find any paid
+    // invoices" -- technically correct for that query, but not what was asked. The
+    // model's guessed status ("PAID" here) is deliberately ignored: the real answer
+    // (PENDING) comes from a direct lookup, not from testing the guess.
+    const searchService = { search: vi.fn() } as unknown as SearchService;
+    const ollamaService = { chatCompletion: vi.fn() } as unknown as OllamaService;
+    const spendQueryService = { getVendorSpendSummary: vi.fn() } as unknown as SpendQueryService;
+    const chatIntentService = fakeChatIntentService({
+      type: "STATUS_FILTER",
+      status: "PAID",
+      invoiceNumber: "EXL-2026-2048",
+    });
+    const invoiceStatusQueryService = fakeInvoiceStatusQueryService({
+      getStatusForInvoiceNumber: vi.fn().mockResolvedValue([
+        {
+          invoiceNumber: "EXL-2026-2048",
+          vendorName: "Express Cargo & Logistics Solutions",
+          totalAmount: 45810,
+          paymentStatus: "PENDING",
+          isOverdue: true,
+          dueDate: new Date("2026-07-22T00:00:00.000Z"),
+        },
+      ]),
+    });
+
+    const service = new RagService(
+      searchService,
+      ollamaService,
+      spendQueryService,
+      chatIntentService,
+      fakeRepository(),
+      invoiceStatusQueryService
+    );
+    const result = await service.answer({ question: "What is the payment status of invoice EXL-2026-2048?" });
+
+    expect(result.mode).toBe("computed");
+    expect(result.answer).toContain("EXL-2026-2048");
+    expect(result.answer).toContain("Express Cargo & Logistics Solutions");
+    expect(result.answer).toContain("unpaid and overdue");
+    expect(result.answer).not.toContain("is paid");
+    expect(searchService.search).not.toHaveBeenCalled();
+    expect(invoiceStatusQueryService.getStatusForInvoiceNumber).toHaveBeenCalledWith("EXL-2026-2048");
+    expect(invoiceStatusQueryService.listByStatus).not.toHaveBeenCalled();
+  });
+
+  it("answers clearly when the named invoice number doesn't match anything", async () => {
+    const searchService = { search: vi.fn() } as unknown as SearchService;
+    const ollamaService = { chatCompletion: vi.fn() } as unknown as OllamaService;
+    const spendQueryService = { getVendorSpendSummary: vi.fn() } as unknown as SpendQueryService;
+    const chatIntentService = fakeChatIntentService({
+      type: "STATUS_FILTER",
+      status: "UNPAID",
+      invoiceNumber: "NO-SUCH-INVOICE",
+    });
+    const invoiceStatusQueryService = fakeInvoiceStatusQueryService();
+
+    const service = new RagService(
+      searchService,
+      ollamaService,
+      spendQueryService,
+      chatIntentService,
+      fakeRepository(),
+      invoiceStatusQueryService
+    );
+    const result = await service.answer({ question: "What is the payment status of invoice NO-SUCH-INVOICE?" });
+
+    expect(result.mode).toBe("computed");
+    expect(result.answer).toBe('I couldn\'t find an invoice matching "NO-SUCH-INVOICE".');
+    expect(searchService.search).not.toHaveBeenCalled();
+  });
 });
 
 describe("RagService.answer — line-item aggregation path", () => {
@@ -1013,5 +1091,80 @@ describe("RagService.answer — line-item aggregation path", () => {
 
     expect(result.mode).toBe("computed");
     expect(result.answer).toMatch(/different currencies/);
+  });
+});
+
+describe("RagService.answer — context-aware follow-up search", () => {
+  it("nudges the search query toward the invoice named in the immediately prior turn when the follow-up doesn't name one itself", async () => {
+    // Reproduces the confirmed live bug: after two turns discussing "EXL-2026-2048"
+    // specifically, "How much GST was charged?" silently answered about a different
+    // invoice instead of continuing the one just discussed, because search only ever
+    // looked at the current question's raw text.
+    const search = vi.fn().mockResolvedValue({ results: [] });
+    const searchService = { search } as unknown as SearchService;
+    const ollamaService = { chatCompletion: vi.fn() } as unknown as OllamaService;
+    const spendQueryService = { getVendorSpendSummary: vi.fn() } as unknown as SpendQueryService;
+    const chatIntentService = fakeChatIntentService({ type: "RETRIEVAL" });
+
+    const service = new RagService(searchService, ollamaService, spendQueryService, chatIntentService, fakeRepository());
+    await service.answer({
+      question: "How much GST was charged?",
+      history: [
+        { role: "user", content: "Summarize this invoice in simple terms." },
+        {
+          role: "assistant",
+          content: "EXL-2026-2048 is an invoice for Express Cargo & Logistics Solutions dated July 21, 2026.",
+        },
+      ],
+    });
+
+    expect(search).toHaveBeenCalledWith(expect.objectContaining({ query: "EXL-2026-2048 How much GST was charged?" }));
+  });
+
+  it("does not nudge the query when the current question already names its own invoice", async () => {
+    const search = vi.fn().mockResolvedValue({ results: [] });
+    const searchService = { search } as unknown as SearchService;
+    const ollamaService = { chatCompletion: vi.fn() } as unknown as OllamaService;
+    const spendQueryService = { getVendorSpendSummary: vi.fn() } as unknown as SpendQueryService;
+    const chatIntentService = fakeChatIntentService({ type: "RETRIEVAL" });
+
+    const service = new RagService(searchService, ollamaService, spendQueryService, chatIntentService, fakeRepository());
+    await service.answer({
+      question: "How much GST was charged on invoice INV-2026-001?",
+      history: [{ role: "assistant", content: "EXL-2026-2048 is an invoice for Express Cargo." }],
+    });
+
+    expect(search).toHaveBeenCalledWith(
+      expect.objectContaining({ query: "How much GST was charged on invoice INV-2026-001?" })
+    );
+  });
+
+  it("does not nudge the query when the prior turn names more than one invoice (ambiguous)", async () => {
+    const search = vi.fn().mockResolvedValue({ results: [] });
+    const searchService = { search } as unknown as SearchService;
+    const ollamaService = { chatCompletion: vi.fn() } as unknown as OllamaService;
+    const spendQueryService = { getVendorSpendSummary: vi.fn() } as unknown as SpendQueryService;
+    const chatIntentService = fakeChatIntentService({ type: "RETRIEVAL" });
+
+    const service = new RagService(searchService, ollamaService, spendQueryService, chatIntentService, fakeRepository());
+    await service.answer({
+      question: "How much GST was charged?",
+      history: [{ role: "assistant", content: "Comparing EXL-2026-2048 and INV-2026-001 side by side..." }],
+    });
+
+    expect(search).toHaveBeenCalledWith(expect.objectContaining({ query: "How much GST was charged?" }));
+  });
+
+  it("does not nudge the query when there is no prior history", async () => {
+    const search = vi.fn().mockResolvedValue({ results: [] });
+    const searchService = { search } as unknown as SearchService;
+    const ollamaService = { chatCompletion: vi.fn() } as unknown as OllamaService;
+    const spendQueryService = { getVendorSpendSummary: vi.fn() } as unknown as SpendQueryService;
+    const chatIntentService = fakeChatIntentService({ type: "RETRIEVAL" });
+
+    const service = new RagService(searchService, ollamaService, spendQueryService, chatIntentService, fakeRepository());
+    await service.answer({ question: "How much GST was charged?" });
+
+    expect(search).toHaveBeenCalledWith(expect.objectContaining({ query: "How much GST was charged?" }));
   });
 });

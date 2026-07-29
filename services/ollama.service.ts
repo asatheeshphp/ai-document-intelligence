@@ -212,6 +212,8 @@ STATUS_FILTER examples:
 - "Get unpaid invoices"
 - "Which invoices are overdue?"
 - "Show me the invoices I've already paid."
+- "What is the payment status of invoice EXL-2026-2048?" (names ONE specific invoice)
+- "Has invoice 27639 been paid?" (names ONE specific invoice)
 
 RETRIEVAL examples:
 - "What did the Readylink invoice say?"
@@ -229,13 +231,18 @@ spelling. For example, "Express Cargo" must stay "Express Cargo", not "ExpressCa
 If LINE_ITEM_AGGREGATION, extract the product/category keyword the same exact-copy way.
 
 If STATUS_FILTER, also decide which status: UNPAID (not yet paid, including overdue),
-OVERDUE (unpaid AND past its due date specifically), or PAID.
+OVERDUE (unpaid AND past its due date specifically), or PAID. If the question names ONE
+specific invoice by number, also extract that invoice number EXACTLY as it appears
+(same character-for-character rule as vendor names above) -- when a specific invoice is
+named, the status you guess matters less than the invoice number itself, since the
+question is really asking "what IS its status", not testing whether it matches a guess.
 
 Return ONLY one line in exactly one of these formats:
 
 ANSWER: AGGREGATION vendor="<vendor name>" from=<YYYY-MM-DD> to=<YYYY-MM-DD>
 ANSWER: AGGREGATION vendor="<vendor name>"
 ANSWER: LINE_ITEM_AGGREGATION keyword="<product or category>"
+ANSWER: STATUS_FILTER status=<PAID|UNPAID|OVERDUE> invoiceNumber="<invoice number>"
 ANSWER: STATUS_FILTER status=<PAID|UNPAID|OVERDUE>
 ANSWER: RETRIEVAL
 
@@ -244,6 +251,7 @@ ANSWER: AGGREGATION vendor="Readylink" from=2026-01-01 to=2026-12-31
 ANSWER: AGGREGATION vendor="SuperStore"
 ANSWER: LINE_ITEM_AGGREGATION keyword="computer"
 ANSWER: STATUS_FILTER status=UNPAID
+ANSWER: STATUS_FILTER status=UNPAID invoiceNumber="EXL-2026-2048"
 ANSWER: RETRIEVAL
 
 Question:
@@ -253,7 +261,7 @@ ${question}
 }
 
 const CHAT_INTENT_PATTERN =
-  /ANSWER:\s*(AGGREGATION|RETRIEVAL|STATUS_FILTER|LINE_ITEM_AGGREGATION)(?:\s+vendor="([^"]+)")?(?:\s+from=(\d{4}-\d{2}-\d{2}))?(?:\s+to=(\d{4}-\d{2}-\d{2}))?(?:\s+status=(PAID|UNPAID|OVERDUE))?(?:\s+keyword="([^"]+)")?/i;
+  /ANSWER:\s*(AGGREGATION|RETRIEVAL|STATUS_FILTER|LINE_ITEM_AGGREGATION)(?:\s+vendor="([^"]+)")?(?:\s+from=(\d{4}-\d{2}-\d{2}))?(?:\s+to=(\d{4}-\d{2}-\d{2}))?(?:\s+status=(PAID|UNPAID|OVERDUE))?(?:\s+keyword="([^"]+)")?(?:\s+invoiceNumber="([^"]+)")?/i;
 
 function parseChatIntentResponse(raw: string): ChatIntent | null {
   // Same "take the last match" reasoning as parseClassificationResponse -- the model
@@ -268,8 +276,9 @@ function parseChatIntentResponse(raw: string): ChatIntent | null {
   const to = match[4] || undefined;
   const status = match[5]?.toUpperCase() as ChatIntent["status"] | undefined;
   const keyword = match[6] || undefined;
+  const invoiceNumber = match[7] || undefined;
 
-  const result = ChatIntentSchema.safeParse({ type, vendor, from, to, status, keyword });
+  const result = ChatIntentSchema.safeParse({ type, vendor, from, to, status, keyword, invoiceNumber });
   return result.success ? result.data : null;
 }
 

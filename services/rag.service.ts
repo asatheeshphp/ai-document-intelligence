@@ -1,7 +1,11 @@
 import { SearchService } from "@/services/search.service";
 import { OllamaService } from "@/services/ollama.service";
 import { SpendQueryService, type VendorSpendSummary } from "@/services/spend-query.service";
-import { InvoiceStatusQueryService, type InvoiceStatusSummaryItem } from "@/services/invoice-status-query.service";
+import {
+  InvoiceStatusQueryService,
+  type InvoiceStatusSummaryItem,
+  type InvoiceStatusLookupItem,
+} from "@/services/invoice-status-query.service";
 import { LineItemAggregationService, type LineItemAggregationSummary } from "@/services/line-item-aggregation.service";
 import { ChatIntentService } from "@/services/chat-intent.service";
 import { ProcessingRepository } from "@/repositories/processing.repository";
@@ -238,6 +242,28 @@ function formatStatusFilterAnswer(invoices: InvoiceStatusSummaryItem[], status: 
   return `Found ${invoices.length} ${label} ${invoiceWord}:\n${lines.join("\n")}`;
 }
 
+// Fixed string template, deliberately NOT an LLM call -- reports the invoice's REAL
+// current status looked up directly, never the model's guessed `status` value (which
+// is irrelevant here -- see InvoiceStatusQueryService.getStatusForInvoiceNumber's
+// comment for why).
+function formatInvoiceStatusLookupAnswer(invoiceNumber: string, matches: InvoiceStatusLookupItem[]): string {
+  if (matches.length === 0) {
+    return `I couldn't find an invoice matching "${invoiceNumber}".`;
+  }
+
+  const lines = matches.map((invoice) => {
+    const statusLabel = invoice.paymentStatus === "PAID" ? "paid" : invoice.isOverdue ? "unpaid and overdue" : "unpaid";
+    const dueLabel = invoice.dueDate ? ` (due ${invoice.dueDate.toISOString().slice(0, 10)})` : "";
+    const amountLabel =
+      invoice.totalAmount !== undefined
+        ? ` — ${invoice.currency ? `${invoice.currency} ` : ""}${invoice.totalAmount.toFixed(2)}`
+        : "";
+    return `Invoice ${invoice.invoiceNumber ?? invoiceNumber} — ${invoice.vendorName ?? "(unknown vendor)"} is ${statusLabel}${dueLabel}${amountLabel}.`;
+  });
+
+  return lines.join("\n");
+}
+
 // Fixed string template, deliberately NOT an LLM call -- same reasoning as
 // formatSpendAnswer/formatStatusFilterAnswer: the sum and its line items come straight
 // from LineItemAggregationService's own parsing of each chunk's "amount" field, never
@@ -294,6 +320,21 @@ export class RagService {
       // still surface something useful.
     }
 
+    if (intent?.type === "STATUS_FILTER" && intent.invoiceNumber) {
+      // Confirmed live: "what is the payment status of invoice EXL-2026-2048?" ran the
+      // SAME blanket "list every PAID invoice" query as "any paid invoices?" -- the
+      // invoice number was extracted but discarded, never used to scope the query.
+      // Deliberately ignores intent.status here -- the model's guessed status is
+      // irrelevant once a specific invoice is named; look up and report its REAL
+      // current status directly instead of testing a guess.
+      const matches = await this.invoiceStatusQueryService.getStatusForInvoiceNumber(intent.invoiceNumber);
+      return {
+        answer: formatInvoiceStatusLookupAnswer(intent.invoiceNumber, matches),
+        sources: [],
+        mode: "computed",
+      };
+    }
+
     if (intent?.type === "STATUS_FILTER" && intent.status) {
       // Unlike AGGREGATION's vendor match, a status value is a closed enum the model
       // either got right or (rarely) mis-set -- there's no "vendor name might be
@@ -335,8 +376,19 @@ export class RagService {
       // might not be the right search term, but retrieval can still try.
     }
 
+    // Confirmed live: after two turns discussing "EXL-2026-2048" specifically, a vague
+    // follow-up ("How much GST was charged?") silently answered about a DIFFERENT
+    // invoice (INV-2026-001) instead of continuing the one just discussed -- search
+    // only ever looks at the current question's raw text, with no notion that "GST"
+    // here almost certainly means "on the invoice we were just talking about." Nudge
+    // (not filter) the search query toward the most recently discussed invoice when the
+    // current question doesn't already name one itself -- additive ranking signal only,
+    // so a genuine new-topic/cross-invoice question (which brings its own vocabulary)
+    // isn't forced onto the wrong invoice; grounding checks below still apply either way.
+    const searchQuery = this.buildContextAwareSearchQuery(input.question, history);
+
     const { results } = await this.searchService.search({
-      query: input.question,
+      query: searchQuery,
       topK: RETRIEVAL_TOP_K,
     });
 
@@ -381,6 +433,33 @@ export class RagService {
    * Only adds a chunk that isn't already present -- never removes or reorders what
    * search actually ranked.
    */
+  /**
+   * Nudges the search query toward the most recently discussed invoice when the
+   * current question doesn't name one itself -- see the call site's comment for the
+   * confirmed live bug this fixes. Only looks at the single most recent turn (the
+   * immediately prior exchange is what "it"/an unqualified follow-up most plausibly
+   * refers to; reaching further back risks pulling in a since-abandoned topic). Only
+   * trusts an UNAMBIGUOUS single reference in that turn -- if it names two or more
+   * different invoices (or none), there's nothing safe to carry forward, so the
+   * question is left untouched.
+   *
+   * Only recognizes the letters-digits-digits invoice-number shape (e.g.
+   * "EXL-2026-2048"), not bare-numeric invoice numbers (e.g. "27639") -- a bare number
+   * is too easily some other figure entirely (an amount, a quantity), so extending this
+   * to bare numbers risks nudging toward the wrong thing more often than it helps.
+   */
+  private buildContextAwareSearchQuery(question: string, history: RagChatTurn[]): string {
+    if (extractInvoiceNumberShapedCandidates(question).length > 0) return question;
+
+    const lastTurn = history.at(-1);
+    if (!lastTurn) return question;
+
+    const candidates = extractInvoiceNumberShapedCandidates(lastTurn.content);
+    if (candidates.length !== 1) return question;
+
+    return `${candidates[0]} ${question}`;
+  }
+
   private async augmentWithPaymentChunks(results: SearchResultItem[]): Promise<SearchResultItem[]> {
     const augmented = [...results];
     const distinctInvoices = getDistinctInvoices(results);

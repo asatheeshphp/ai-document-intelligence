@@ -12,6 +12,15 @@ export const ChatIntentSchema = z.object({
   // app/api/invoices/due/route.ts already queries with, so a chat question like "any
   // unpaid invoices?" resolves to the exact same data that page's UI already surfaces.
   status: z.enum(["PAID", "UNPAID", "OVERDUE"]).optional(),
+  // Only set for STATUS_FILTER when the question names one specific invoice by number
+  // (e.g. "what is the payment status of EXL-2026-2048?"). Confirmed live: without
+  // this, "status of invoice X" questions ran the SAME blanket "list every PAID
+  // invoice" query as "any paid invoices?" -- discarding the invoice number entirely
+  // and answering about the wrong thing. When set, RagService looks up that invoice's
+  // REAL current status directly, ignoring `status` above (the model's guessed status
+  // is irrelevant once a specific invoice is named -- the point is to report what its
+  // status actually is, not test a guess).
+  invoiceNumber: z.string().optional(),
   // Only set for LINE_ITEM_AGGREGATION -- a product/category term (e.g. "computer",
   // "logistics services"), NOT a vendor name. Confirmed live: asking the model to
   // freely summarize/sum a category total led it to invent or mis-arithmetic a number

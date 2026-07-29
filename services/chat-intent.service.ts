@@ -69,6 +69,21 @@ function looksLikePaidStatusFilter(question: string): boolean {
   return PAID_STATUS_FILTER_PATTERNS.some((pattern) => pattern.test(question));
 }
 
+// Confirmed live, deterministically (3/3 identical calls): "What is the payment
+// condition?" and "What are the payment conditions for Express Cargo?" both
+// misclassified as STATUS_FILTER -- the model reads "condition(s)" as if it meant
+// "status", when in ordinary invoice English "payment condition(s)" overwhelmingly
+// means payment TERMS (e.g. "Net 14 Days", "due within 15 days"), a retrieval
+// question. Confirmed the boundary is specifically this word: "payment terms?",
+// "payment due date?", and "payment method?" all correctly stayed RETRIEVAL on the
+// same live model. Scoped narrowly to the "payment condition(s)" phrase itself, not a
+// broader "condition" ban, since that word has no other observed failure mode here.
+const PAYMENT_CONDITION_MISCLASSIFICATION_PATTERN = /\bpayment\s+conditions?\b|\bconditions?\s+of\s+payment\b/i;
+
+function looksLikePaymentTermsQuestion(question: string): boolean {
+  return PAYMENT_CONDITION_MISCLASSIFICATION_PATTERN.test(question);
+}
+
 export class ChatIntentService {
   constructor(private readonly ollamaService: OllamaService = new OllamaService()) {}
 
@@ -95,6 +110,9 @@ export class ChatIntentService {
     const result = majorityVote(votes);
     if (result.type === "RETRIEVAL" && looksLikePaidStatusFilter(question)) {
       return { type: "STATUS_FILTER", status: "PAID" };
+    }
+    if (result.type === "STATUS_FILTER" && looksLikePaymentTermsQuestion(question)) {
+      return { type: "RETRIEVAL" };
     }
 
     return result;

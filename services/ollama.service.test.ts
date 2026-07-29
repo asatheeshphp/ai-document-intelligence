@@ -304,6 +304,18 @@ describe("OllamaService.detectChatIntent", () => {
     expect(outcome.data).toEqual({ type: "STATUS_FILTER", status: "OVERDUE" });
   });
 
+  it("parses STATUS_FILTER with an invoiceNumber for a per-invoice status question", async () => {
+    vi.mocked(axios.post).mockResolvedValue({
+      data: { message: { content: 'ANSWER: STATUS_FILTER status=UNPAID invoiceNumber="EXL-2026-2048"' } },
+    });
+
+    const service = new OllamaService();
+    const outcome = await service.detectChatIntent("What is the payment status of invoice EXL-2026-2048?");
+
+    expect(outcome.success).toBe(true);
+    expect(outcome.data).toEqual({ type: "STATUS_FILTER", status: "UNPAID", invoiceNumber: "EXL-2026-2048" });
+  });
+
   it("returns a failure outcome when no ANSWER line is present", async () => {
     vi.mocked(axios.post).mockResolvedValue({
       data: { message: { content: "I'm not sure how to classify this." } },

@@ -132,6 +132,38 @@ describe("ChatIntentService.detectIntent", () => {
     expect(result).toEqual({ type: "AGGREGATION", vendor: "Readylink" });
   });
 
+  it("overrides a STATUS_FILTER vote back to RETRIEVAL for a 'payment condition(s)' question", async () => {
+    // Confirmed live, deterministically (3/3 identical calls): the model reads
+    // "condition(s)" as if it meant "status", misclassifying a payment-terms question
+    // as a paid/unpaid filter. "payment terms?", "payment due date?", and "payment
+    // method?" all correctly stayed RETRIEVAL on the same live model -- the boundary is
+    // specifically the word "condition(s)".
+    const ollama = fakeOllamaService({ success: true, data: { type: "STATUS_FILTER", status: "PAID" } });
+    const service = new ChatIntentService(ollama);
+
+    const result = await service.detectIntent("What is the payment condition?");
+
+    expect(result).toEqual({ type: "RETRIEVAL" });
+  });
+
+  it("overrides a STATUS_FILTER vote back to RETRIEVAL for 'payment conditions' naming a vendor", async () => {
+    const ollama = fakeOllamaService({ success: true, data: { type: "STATUS_FILTER", status: "UNPAID" } });
+    const service = new ChatIntentService(ollama);
+
+    const result = await service.detectIntent("What are the payment conditions for Express Cargo?");
+
+    expect(result).toEqual({ type: "RETRIEVAL" });
+  });
+
+  it("does not apply the payment-condition override to a genuine STATUS_FILTER vote with no 'condition' wording", async () => {
+    const ollama = fakeOllamaService({ success: true, data: { type: "STATUS_FILTER", status: "UNPAID" } });
+    const service = new ChatIntentService(ollama);
+
+    const result = await service.detectIntent("any unpaid invoices?");
+
+    expect(result).toEqual({ type: "STATUS_FILTER", status: "UNPAID" });
+  });
+
   it("counts a failed individual attempt as a RETRIEVAL vote rather than aborting", async () => {
     const ollama = fakeOllamaServiceWithSequence([
       { success: true, data: { type: "AGGREGATION", vendor: "SuperStore" } },

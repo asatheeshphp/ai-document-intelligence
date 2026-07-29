@@ -11,12 +11,43 @@ export interface InvoiceStatusSummaryItem {
   dueDate?: Date;
 }
 
+export interface InvoiceStatusLookupItem extends InvoiceStatusSummaryItem {
+  paymentStatus: "PAID" | "PENDING";
+  isOverdue: boolean;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 export class InvoiceStatusQueryService {
   constructor(private readonly repository: ProcessingRepository = new ProcessingRepository()) {}
 
   async listByStatus(status: InvoiceStatusFilter): Promise<InvoiceStatusSummaryItem[]> {
     const invoices = await this.repository.listInvoices(this.buildFilter(status));
     return invoices.map((invoice) => this.toSummaryItem(invoice));
+  }
+
+  // Confirmed live: "what is the payment status of invoice EXL-2026-2048?" ran the
+  // SAME blanket "list every PAID invoice" query as "any paid invoices?" -- the invoice
+  // number was extracted but never used, silently discarded. This looks up that one
+  // invoice directly and reports its REAL current status, deliberately ignoring
+  // whatever `status` value the model guessed for the question -- the point of a
+  // per-invoice question is to report what the status actually IS, not to test a guess
+  // that might itself be wrong.
+  async getStatusForInvoiceNumber(invoiceNumber: string): Promise<InvoiceStatusLookupItem[]> {
+    const pattern = `^${escapeRegExp(invoiceNumber.trim())}$`;
+    const invoices = await this.repository.listInvoices({ invoiceNumber: { $regex: pattern, $options: "i" } });
+    const now = new Date();
+
+    return invoices.map((invoice) => {
+      const paymentStatus = invoice.paymentStatus === "PAID" ? "PAID" : "PENDING";
+      return {
+        ...this.toSummaryItem(invoice),
+        paymentStatus,
+        isOverdue: paymentStatus !== "PAID" && Boolean(invoice.dueDate) && invoice.dueDate! < now,
+      };
+    });
   }
 
   // Mirrors app/api/invoices/due/route.ts's existing filter exactly, so a chat question
