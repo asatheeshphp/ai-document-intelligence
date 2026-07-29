@@ -43,6 +43,32 @@ function majorityVote(votes: ChatIntent[]): ChatIntent {
   return votes.find((vote) => vote.type === winningType)!;
 }
 
+// Confirmed live, deterministically (5/5 identical calls, not a random per-call
+// disagreement voting could smooth over): the model reliably misreads "paid" (positive
+// polarity, e.g. "get the paid invoices", "list paid invoices") as RETRIEVAL, while the
+// identically-shaped "unpaid"/"overdue" questions classify correctly every time. Adding
+// more few-shot examples to the prompt for this case was tried and measured to make it
+// *worse* -- two previously-correct phrasings ("get all paid invoices", "which invoices
+// have been paid?") flipped to wrong once more "paid" examples were added, showing this
+// is a small-model capacity limit, not a prompt-wording gap. A deterministic keyword
+// override is the reliable fix, same lesson as buildWhitespaceTolerantPattern earlier
+// this session: a prompt fix alone isn't a guarantee.
+//
+// Scoped narrowly on purpose: only overrides when the LLM's own vote was RETRIEVAL (an
+// already-STATUS_FILTER or AGGREGATION vote is left alone), and only matches "paid
+// invoices" used as the direct object of a listing verb/question -- not any sentence
+// that happens to mention both words, e.g. "Summarize the invoice from ABC that I
+// already paid last month" doesn't match and correctly stays RETRIEVAL.
+const PAID_STATUS_FILTER_PATTERNS = [
+  /\b(get|list|show|find|display)\b(\s+(me|the|all|my))*\s+paid\s+invoices?\b/i,
+  /\bwhich\s+invoices?\s+(have\s+been\s+|are\s+)?paid\b/i,
+  /\bany\s+paid\s+invoices?\b/i,
+];
+
+function looksLikePaidStatusFilter(question: string): boolean {
+  return PAID_STATUS_FILTER_PATTERNS.some((pattern) => pattern.test(question));
+}
+
 export class ChatIntentService {
   constructor(private readonly ollamaService: OllamaService = new OllamaService()) {}
 
@@ -66,6 +92,11 @@ export class ChatIntentService {
       }
     }
 
-    return majorityVote(votes);
+    const result = majorityVote(votes);
+    if (result.type === "RETRIEVAL" && looksLikePaidStatusFilter(question)) {
+      return { type: "STATUS_FILTER", status: "PAID" };
+    }
+
+    return result;
   }
 }

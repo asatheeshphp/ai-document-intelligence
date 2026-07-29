@@ -97,6 +97,41 @@ describe("ChatIntentService.detectIntent", () => {
     expect(result).toEqual({ type: "RETRIEVAL" });
   });
 
+  it("overrides a RETRIEVAL vote to STATUS_FILTER PAID for a 'paid invoices' listing question", async () => {
+    // Confirmed live, deterministically (5/5 identical calls): the model reliably
+    // misreads positive "paid" phrasing ("get the paid invoices") as RETRIEVAL, while
+    // identically-shaped "unpaid" questions classify correctly every time -- a small-
+    // model capacity limit that adding more prompt examples measurably made worse, not
+    // better. The keyword override is the reliable fix.
+    const ollama = fakeOllamaService({ success: true, data: { type: "RETRIEVAL" } });
+    const service = new ChatIntentService(ollama);
+
+    const result = await service.detectIntent("get the paid invoices");
+
+    expect(result).toEqual({ type: "STATUS_FILTER", status: "PAID" });
+  });
+
+  it("does not override a genuine RETRIEVAL vote that only coincidentally mentions 'paid'", async () => {
+    // Guards against the override being too broad: a real retrieval question that
+    // happens to mention "paid" and "invoice" without being shaped as a listing request
+    // must not be swept into STATUS_FILTER.
+    const ollama = fakeOllamaService({ success: true, data: { type: "RETRIEVAL" } });
+    const service = new ChatIntentService(ollama);
+
+    const result = await service.detectIntent("Summarize the invoice from ABC that I already paid last month");
+
+    expect(result).toEqual({ type: "RETRIEVAL" });
+  });
+
+  it("does not apply the paid-status override when the model's vote was already AGGREGATION", async () => {
+    const ollama = fakeOllamaService({ success: true, data: { type: "AGGREGATION", vendor: "Readylink" } });
+    const service = new ChatIntentService(ollama);
+
+    const result = await service.detectIntent("How much have I paid Readylink?");
+
+    expect(result).toEqual({ type: "AGGREGATION", vendor: "Readylink" });
+  });
+
   it("counts a failed individual attempt as a RETRIEVAL vote rather than aborting", async () => {
     const ollama = fakeOllamaServiceWithSequence([
       { success: true, data: { type: "AGGREGATION", vendor: "SuperStore" } },

@@ -334,6 +334,45 @@ prompt only).
       returns "I couldn't find any paid invoices." All previously-verified
       AGGREGATION/RETRIEVAL/premise-check behavior re-confirmed unchanged.
 
+### Task 11: Fix deterministic misclassification of "paid" (positive) status questions — found via live re-testing after Task 10 shipped
+
+**Files:** `services/chat-intent.service.ts`, `services/chat-intent.service.test.ts`
+
+- [x] "get the paid invoices" returned a generic RETRIEVAL non-answer. Debugged directly
+      against the live model (not assumed): 5/5 identical calls all returned RETRIEVAL
+      for this exact question -- a genuine, deterministic misclassification, not the
+      random per-call disagreement majority voting exists to smooth over. Testing a
+      range of phrasings found the boundary: "paid" (positive polarity) combined with
+      certain shapes -- especially the article "the", or "list"/"show" without "get" --
+      reliably misclassifies as RETRIEVAL, while "unpaid" and "overdue" questions
+      classified correctly across every phrasing tried.
+- [x] First attempt (adding more few-shot "paid" examples to the prompt) was tried and
+      measured, live, to make things *worse* -- two previously-correct phrasings ("get
+      all paid invoices", "which invoices have been paid?") flipped to wrong once more
+      "paid" examples were added. Reverted. This confirms a genuine small-model capacity
+      limit on this specific distinction, not a prompt-wording gap -- same lesson as
+      `buildWhitespaceTolerantPattern` earlier this session: a prompt fix alone isn't a
+      guarantee.
+- [x] Fix: a deterministic keyword override in `ChatIntentService.detectIntent`, applied
+      only when the model's own majority vote was RETRIEVAL (an already-STATUS_FILTER or
+      AGGREGATION vote is left untouched). Matches "paid invoices" specifically used as
+      the direct object of a listing verb/question (`get/list/show/find/display [the/
+      all/my] paid invoices`, `which invoices have been paid?`, `any paid invoices?`) --
+      not any sentence that merely mentions both words, so a genuine retrieval question
+      like "Summarize the invoice from ABC that I already paid last month" correctly
+      stays RETRIEVAL.
+- [x] 3 new unit tests: the override firing on the reported case, the override NOT
+      firing on the coincidental-mention edge case, and the override not touching an
+      already-correct AGGREGATION vote. 44/44 passing across the touched test files.
+- [x] `npx tsc --noEmit` clean; `npm test` at 140/141 (same pre-existing, unrelated
+      missing-sample-PDF failure noted in Task 5).
+- [x] Live-verified against the real dev server, testing every previously-failing
+      phrasing plus regression checks: "get the paid invoices" (fixed), "any unpaid
+      invoices?", "which invoices are overdue?", "How much have I paid Readylink?" (still
+      correctly finds nothing -- Readylink's invoices remain deleted from earlier
+      test-data cleanup), and "What is the grand total on invoice 27639?" -- all
+      unchanged and correct.
+
 ---
 
 ## Out of scope for this plan (explicit)
