@@ -81,6 +81,7 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
             taxAmount: invoice.taxAmount,
             totalAmount: invoice.totalAmount,
             status: invoice.status,
+            paymentStatus: invoice.paymentStatus,
             extractedData: invoice.extractedData,
             metadata: invoice.metadata,
           }

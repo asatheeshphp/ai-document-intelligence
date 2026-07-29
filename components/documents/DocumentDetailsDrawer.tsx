@@ -26,6 +26,7 @@ interface DocumentDetail {
     taxAmount?: number;
     totalAmount?: number;
     status: string;
+    paymentStatus: "PENDING" | "PAID";
     extractedData: Record<string, unknown>;
     metadata: Record<string, unknown>;
   } | null;
@@ -63,6 +64,8 @@ interface DocumentDetailsDrawerProps {
 export function DocumentDetailsDrawer({ documentId, onClose }: DocumentDetailsDrawerProps) {
   const [detail, setDetail] = useState<DocumentDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [updatingPaymentStatus, setUpdatingPaymentStatus] = useState(false);
+  const [paymentStatusError, setPaymentStatusError] = useState<string | null>(null);
 
   // The parent remounts this component (via a `key` on documentId) whenever the
   // selected document changes, so detail/error naturally start fresh — no manual
@@ -97,6 +100,30 @@ export function DocumentDetailsDrawer({ documentId, onClose }: DocumentDetailsDr
   if (!documentId) return null;
 
   const loading = !detail && !error;
+
+  async function togglePaymentStatus() {
+    if (!detail?.invoice) return;
+    const nextStatus = detail.invoice.paymentStatus === "PAID" ? "PENDING" : "PAID";
+
+    setUpdatingPaymentStatus(true);
+    try {
+      const response = await fetch(`/api/invoices/${detail.invoice.id}/payment-status`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ paymentStatus: nextStatus }),
+      });
+      const data = await response.json();
+      if (!data.success) {
+        throw new Error(data.error ?? "Failed to update payment status");
+      }
+      setDetail({ ...detail, invoice: { ...detail.invoice, paymentStatus: nextStatus } });
+      setPaymentStatusError(null);
+    } catch (err) {
+      setPaymentStatusError(err instanceof Error ? err.message : "Failed to update payment status");
+    } finally {
+      setUpdatingPaymentStatus(false);
+    }
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end">
@@ -169,13 +196,48 @@ export function DocumentDetailsDrawer({ documentId, onClose }: DocumentDetailsDr
                       ? new Date(detail.invoice.invoiceDate).toLocaleDateString()
                       : "—"}
                   </dd>
+                  <dt className="text-zinc-500 dark:text-zinc-400">Due Date</dt>
+                  <dd className="text-zinc-900 dark:text-zinc-50">
+                    {detail.invoice.dueDate
+                      ? new Date(detail.invoice.dueDate).toLocaleDateString()
+                      : "—"}
+                  </dd>
                   <dt className="text-zinc-500 dark:text-zinc-400">Grand Total</dt>
                   <dd className="text-zinc-900 dark:text-zinc-50">
                     {detail.invoice.totalAmount != null
                       ? `${detail.invoice.currency ?? ""} ${detail.invoice.totalAmount}`.trim()
                       : "—"}
                   </dd>
+                  <dt className="text-zinc-500 dark:text-zinc-400">Payment Status</dt>
+                  <dd>
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                          detail.invoice.paymentStatus === "PAID"
+                            ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400"
+                            : "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400"
+                        }`}
+                      >
+                        {detail.invoice.paymentStatus}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={togglePaymentStatus}
+                        disabled={updatingPaymentStatus}
+                        className="rounded-md border border-zinc-200 px-2 py-0.5 text-xs font-medium text-zinc-700 hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                      >
+                        {updatingPaymentStatus
+                          ? "Updating…"
+                          : detail.invoice.paymentStatus === "PAID"
+                            ? "Mark Pending"
+                            : "Mark Paid"}
+                      </button>
+                    </div>
+                  </dd>
                 </dl>
+                {paymentStatusError && (
+                  <p className="mt-2 text-xs text-red-600 dark:text-red-400">{paymentStatusError}</p>
+                )}
               </section>
             )}
 

@@ -2,6 +2,11 @@ import mongoose, { Schema, type Types } from "mongoose";
 
 export type InvoiceStatus = "NEW" | "EXTRACTED" | "VALIDATED" | "FAILED";
 
+// Business/payment status -- deliberately separate from InvoiceStatus above, which
+// tracks the processing pipeline (extraction succeeded/failed), not whether the bill
+// has actually been paid. A "PAID" invoice can still have InvoiceStatus "EXTRACTED".
+export type InvoicePaymentStatus = "PENDING" | "PAID";
+
 export interface IInvoice extends mongoose.Document {
   _id: Types.ObjectId;
   documentId: Types.ObjectId;
@@ -16,6 +21,7 @@ export interface IInvoice extends mongoose.Document {
   taxAmount?: number;
   totalAmount?: number;
   status: InvoiceStatus;
+  paymentStatus: InvoicePaymentStatus;
   extractedData: Record<string, unknown>;
   metadata: Record<string, unknown>;
   createdAt: Date;
@@ -39,6 +45,12 @@ const InvoiceSchema = new Schema<IInvoice>(
       type: String,
       enum: ["NEW", "EXTRACTED", "VALIDATED", "FAILED"],
       default: "NEW",
+    },
+    paymentStatus: {
+      type: String,
+      enum: ["PENDING", "PAID"],
+      default: "PENDING",
+      index: true,
     },
     extractedData: { type: Schema.Types.Mixed, default: {} },
     metadata: { type: Schema.Types.Mixed, default: {} },

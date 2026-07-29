@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { StatCard } from "@/components/StatCard";
+import { PaymentsDueList } from "@/components/PaymentsDueList";
 
 interface DashboardStats {
   totalDocuments: number;
@@ -98,6 +99,8 @@ export default function DashboardPage() {
               accent="danger"
             />
           </div>
+
+          <PaymentsDueList />
         </>
       )}
     </div>

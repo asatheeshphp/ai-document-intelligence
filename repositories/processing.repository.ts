@@ -317,6 +317,21 @@ export class ProcessingRepository extends BaseRepository<unknown> {
     });
   }
 
+  async findInvoiceById(id: string | Types.ObjectId): Promise<IInvoice | null> {
+    return this.withConnection(async () => {
+      return Invoice.findById(id).exec();
+    });
+  }
+
+  async updateInvoicePaymentStatus(
+    id: string | Types.ObjectId,
+    paymentStatus: IInvoice["paymentStatus"]
+  ): Promise<IInvoice | null> {
+    return this.withConnection(async () => {
+      return Invoice.findByIdAndUpdate(id, { paymentStatus }, { new: true }).exec();
+    });
+  }
+
   async deleteInvoicesByDocumentId(documentId: string | Types.ObjectId): Promise<void> {
     return this.withConnection(async () => {
       await Invoice.deleteMany({ documentId }).exec();
