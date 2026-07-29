@@ -199,7 +199,8 @@
       "Bash(node -e ' *)",
       "Bash(node *)",
       "Bash(echo \"exit:$? \\(1 = not ignored, good\\)\")",
-      "Bash(npm run *)"
+      "Bash(npm run *)",
+      "Bash(python3 -)"
     ]
   }
 }
