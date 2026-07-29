@@ -156,6 +156,53 @@ prompt only).
       against the database) -- matching the reliability already established for
       Readylink and SuperStore.
 
+### Task 7: Fix numeric hallucination via misattribution — found via ad-hoc live testing beyond Task 6's scripted cases
+
+**Files:** `services/rag.service.ts`, `services/rag.service.test.ts`
+
+- [x] Live testing surfaced a distinct, deeper bug than Task 6's: asking "how much paid
+      for logistics?" and "how much paid for internet 2026?" both returned a wrong
+      dollar figure (`4148.2`) that was real but belonged to an unrelated SuperStore
+      invoice, not the one the answer named. Confirmed this wasn't fabrication from
+      nothing -- the model borrowed a genuine number that existed elsewhere in the
+      retrieved context.
+- [x] Root cause 1 (data hygiene): 3 of 6 documents in the live database were leftover
+      test-duplicate copies from earlier duplicate-invoice-check testing, polluting
+      retrieval rankings. Deleted via the existing document-delete endpoint after
+      confirming with the user.
+- [x] Root cause 2 (structural): `SearchService`'s `MAX_RESULTS_PER_INVOICE = 1` means
+      only one chunk per invoice can appear in results. When that chunk was a header
+      rather than the "payment" (totals) chunk, the model never saw the real number for
+      that invoice at all -- so it reached for a plausible-looking figure from a
+      different invoice's chunk that happened to also be in context.
+- [x] Fix A -- `augmentWithPaymentChunks`: after search, for each distinct invoice
+      already in the results, fetch its full chunk set (`findChunksByInvoiceId`) and
+      append its "payment" chunk if one isn't already present. Additive only -- never
+      replaces or reorders what search actually ranked.
+- [x] Fix B -- `isAnswerGrounded`: before returning a retrieval-mode answer, checks that
+      every "significant" (>= 10) monetary figure the model stated actually appears in
+      the SPECIFIC invoice's own full chunk text -- not just anywhere among all
+      retrieved chunks, which could span several unrelated invoices. Confirmed a naive
+      "does this number appear anywhere in context" check would have been insufficient:
+      `4148.2` was present in the overall retrieved context but not in the Express Cargo
+      invoice's own chunks specifically. Only enforced when the answer names exactly one
+      invoice (by vendor name or invoice number substring) -- skipped for 0 or 2+ named
+      invoices to avoid false positives on legitimate multi-invoice list-style answers.
+      Falls back to a new `UNGROUNDED_ANSWER_FALLBACK` message rather than showing a
+      wrong number.
+- [x] `RagService` gained a 5th constructor dependency, `ProcessingRepository`. 5 new
+      unit tests added (payment-chunk augmentation added/skipped, grounding fallback
+      triggered/passed-through, multi-invoice answers skip the check); all existing
+      tests updated to inject a mocked repository. 11/11 passing.
+- [x] `npx tsc --noEmit` clean; `npm test` at 123/124 (the 1 failure is the same
+      pre-existing, unrelated missing-sample-PDF issue noted in Task 5).
+- [x] Live-verified against the real dev server: "What is the grand total on invoice
+      27639?" now correctly returns `4148.2` (confirmed as that invoice's own Grand
+      Total) with all 3 invoices' payment chunks visible as sources with
+      `chunkType: "payment"` -- confirming the augmentation is working. "how much paid
+      for logistics?" correctly returns the exact Express Cargo total (45810) via the
+      aggregation path.
+
 ---
 
 ## Out of scope for this plan (explicit)
