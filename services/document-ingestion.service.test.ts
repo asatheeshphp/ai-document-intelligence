@@ -76,11 +76,14 @@ describe("DocumentIngestionService.processLocalDocument — image files", () => 
 });
 
 describe("DocumentIngestionService.processLocalDocument — re-ingestion", () => {
-  it("deletes the prior invoice/chunks/embeddings for a re-ingested document instead of stacking new ones", async () => {
+  it("deletes the prior invoice only once re-extraction actually succeeds", async () => {
     // upsertDocumentBySourcePath is atomic and already guarantees a single Document row
     // per source path (see ProcessingRepository) — isNew:false here means this call
-    // reused an existing row, so this run must clear that row's old downstream data
-    // before creating fresh Extraction/Invoice/Chunk/Embedding records.
+    // reused an existing row. The old Invoice must only be cleared once a full new
+    // extraction has actually succeeded, not eagerly beforehand — see the two tests
+    // below for the regression this guards against. Chunk/embedding replacement is the
+    // mocked indexingService's own responsibility (see invoice-indexing.service.ts), and
+    // Extraction rows are never deleted — every attempt is kept as history.
     const existingDocumentId = new Types.ObjectId();
     const repository = fakeRepository({
       upsertDocumentBySourcePath: vi
@@ -97,7 +100,16 @@ describe("DocumentIngestionService.processLocalDocument — re-ingestion", () =>
     } as unknown as DocumentClassifierService;
 
     const ollamaService = {
-      extractInvoiceData: vi.fn().mockResolvedValue({ success: false, data: null, raw: "", error: "n/a" }),
+      extractInvoiceData: vi.fn().mockResolvedValue({
+        success: true,
+        data: {
+          invoice: { invoiceNumber: "INV-9002", invoiceDate: null, dueDate: null, poNumber: null, currency: null },
+          supplier: { name: "Vendor Co" },
+          customer: { name: "Customer Co" },
+          totals: { subtotal: null, totalTax: null, grandTotal: null },
+        },
+        raw: "{}",
+      }),
     } as unknown as OllamaService;
 
     const indexingService = {
@@ -119,10 +131,53 @@ describe("DocumentIngestionService.processLocalDocument — re-ingestion", () =>
       expect.stringContaining("invoice.jpg"),
       expect.objectContaining({ extractedText: "Invoice Number: INV-9002" })
     );
-    expect(repository.deleteChunksByDocumentId).toHaveBeenCalledWith(existingDocumentId);
-    expect(repository.deleteEmbeddingsByDocumentId).toHaveBeenCalledWith(existingDocumentId);
     expect(repository.deleteInvoicesByDocumentId).toHaveBeenCalledWith(existingDocumentId);
-    expect(repository.deleteExtractionsByDocumentId).toHaveBeenCalledWith(existingDocumentId);
+    expect(repository.deleteExtractionsByDocumentId).not.toHaveBeenCalled();
+  });
+
+  it("preserves the prior invoice/chunks/embeddings when re-extraction fails, instead of wiping them", async () => {
+    // Confirmed live: re-processing an already-successfully-extracted invoice got it
+    // reclassified as "OTHER" on the second run (LLM classification isn't perfectly
+    // deterministic run-to-run), and the old eager-delete wiped the existing
+    // Invoice/chunks/embeddings down to zero with nothing to replace them. This is the
+    // direct regression test for that bug.
+    const existingDocumentId = new Types.ObjectId();
+    const repository = fakeRepository({
+      upsertDocumentBySourcePath: vi
+        .fn()
+        .mockResolvedValue({ document: { _id: existingDocumentId }, isNew: false }),
+    });
+
+    const visionExtractionService = {
+      extractText: vi.fn().mockResolvedValue("Invoice Number: INV-9002"),
+    } as unknown as VisionExtractionService;
+
+    const documentClassifierService = {
+      classify: vi.fn().mockResolvedValue({ documentType: "OTHER", confidence: 0.7 }),
+    } as unknown as DocumentClassifierService;
+
+    const ollamaService = { extractInvoiceData: vi.fn() } as unknown as OllamaService;
+
+    const indexingService = {
+      replaceChunksAndEmbeddings: vi.fn().mockResolvedValue(undefined),
+    } as unknown as InvoiceIndexingService;
+
+    const service = new DocumentIngestionService(
+      repository,
+      ollamaService,
+      indexingService,
+      new DocumentQualityService(),
+      visionExtractionService,
+      documentClassifierService
+    );
+
+    await service.processLocalDocument({ sourcePath: "data/samples/invoice.jpg" });
+
+    expect(repository.deleteChunksByDocumentId).not.toHaveBeenCalled();
+    expect(repository.deleteEmbeddingsByDocumentId).not.toHaveBeenCalled();
+    expect(repository.deleteInvoicesByDocumentId).not.toHaveBeenCalled();
+    expect(repository.deleteExtractionsByDocumentId).not.toHaveBeenCalled();
+    expect(indexingService.replaceChunksAndEmbeddings).not.toHaveBeenCalled();
   });
 
   it("does not delete anything when the document is newly created", async () => {

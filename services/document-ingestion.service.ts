@@ -175,15 +175,15 @@ export class DocumentIngestionService {
       metadata: { sourcePath: absolutePath, ...(input.metadata ?? {}) },
     });
 
-    if (!isNew) {
-      // The Document row itself was just atomically replaced above, but its old
-      // downstream records (from the prior ingestion of this same path) still exist
-      // and must be cleared before this run creates new ones.
-      await this.repository.deleteChunksByDocumentId(document._id);
-      await this.repository.deleteEmbeddingsByDocumentId(document._id);
-      await this.repository.deleteInvoicesByDocumentId(document._id);
-      await this.repository.deleteExtractionsByDocumentId(document._id);
-    }
+    // Deleting the prior run's Invoice/chunks/embeddings used to happen right here,
+    // before classification or extraction had even run again -- so a re-processed
+    // document that happened to get reclassified differently on this run (LLM
+    // classification isn't perfectly deterministic run-to-run) lost its previously
+    // good invoice data with nothing to replace it. Confirmed live: re-running this on
+    // an already-successfully-extracted invoice got it classified as "OTHER" the second
+    // time, wiping the existing Invoice/chunks/embeddings down to zero. Deletion is now
+    // deferred to just before each new artifact is actually created below, so a
+    // reprocess that doesn't reach full success leaves the previous good data intact.
 
     const finalQuality = this.documentQualityService.assess(text, numPages ?? 1);
 
@@ -244,6 +244,13 @@ export class DocumentIngestionService {
         classification,
         message: "AI extraction failed. The raw model response was preserved on the extraction record for review.",
       };
+    }
+
+    // Only now -- extraction has actually succeeded -- is it safe to remove the prior
+    // run's Invoice. replaceChunksAndEmbeddings below handles its own chunks/embeddings
+    // deletion the same way (new embeddings generated before old ones are removed).
+    if (!isNew) {
+      await this.repository.deleteInvoicesByDocumentId(document._id);
     }
 
     const invoice = await this.repository.createInvoice({
