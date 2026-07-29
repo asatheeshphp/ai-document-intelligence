@@ -553,6 +553,64 @@ prompt only).
       answered with the wrong, mislabeled invoice number). Re-confirmed invoice 27639's
       total and the "internet 2026" premise-mismatch fallback are unaffected.
 
+### Task 16: LINE_ITEM_AGGREGATION intent — never let the model touch product/category totals or their arithmetic
+
+**Files:** `schemas/chat-intent.schema.ts`, `services/ollama.service.ts`,
+`services/ollama.service.test.ts`, `services/line-item-aggregation.service.ts` (new),
+`services/line-item-aggregation.service.test.ts` (new), `services/rag.service.ts`,
+`services/rag.service.test.ts`
+
+- [x] "summarize the total computer invoice related amount" let the model pick a
+      garbled per-unit-price fragment out of a line item's raw text ($1,330.29) and then
+      do its own arithmetic on top of it -- "$1,330.29 * 3 = $4,000.87" doesn't even
+      multiply correctly. Same root problem `AGGREGATION`/`STATUS_FILTER` already solve
+      for vendor totals and payment status: never let the model compute or select a
+      number freehand when a real, deterministic answer is available.
+- [x] Added a 4th chat intent, `LINE_ITEM_AGGREGATION`, with an extracted `keyword`
+      field (a product/category term, not a vendor) -- detected the same
+      reasoning-then-`ANSWER:`-line way as the other three, majority-voted by the
+      already-N-category-generalized `ChatIntentService`.
+- [x] New `LineItemAggregationService.getLineItemTotal(keyword)`: searches
+      `chunkType: "line_items"` chunks for the keyword via the existing `SearchService`
+      (same calibrated thresholds as all other retrieval), then for each match parses
+      that chunk's own already-extracted `"amount <value>"` field via regex --
+      deliberately not qty × unit price, which isn't reliably consistent across this
+      corpus's differently-formatted invoices. Sums those real values; the model never
+      sees or touches the arithmetic. Flags mixed currencies the same way
+      `SpendQueryService` already does for vendor totals.
+- [x] Wired into `RagService.answer()` as a 4th computed path, same `mode: "computed"`
+      pattern, falling through to retrieval if nothing matches.
+- [x] **Found and fixed a regression during live verification, before considering this
+      done**: "summarize the total logistics amount" -- previously correct via vendor-
+      name matching (Express Cargo & Logistics Solutions) -- started giving a WRONG
+      total once `LINE_ITEM_AGGREGATION` existed, because the model deterministically
+      (3/3 identical calls) classified it as `LINE_ITEM_AGGREGATION` with a paraphrased
+      keyword ("logistics services") instead of recognizing "Logistics" as literally
+      part of a real vendor's name. Fix: before running line-item aggregation, try each
+      meaningful word of the keyword individually against real vendor names first
+      (word-by-word, since the model's paraphrased whole-phrase keyword doesn't
+      literally match "Logistics Solutions") -- a real vendor-name match is a much
+      stronger, unambiguous signal than a semantic keyword guess, so it's preferred
+      regardless of which intent type the model picked.
+- [x] Documented, not silently missed: live verification also surfaced that
+      `SearchService`'s normal 0.8 retrieval threshold let one borderline (0.808) match
+      ("Machines, Technology, TEC-MA-5498", scored against the query "computer" despite
+      never mentioning the word) into the "computer" sum. Flagged to the user as a real
+      precision-vs-recall question specific to aggregation (a financial total plausibly
+      needs a higher confidence bar than "show me possibly-relevant results") --
+      awaiting a decision on whether to raise the threshold specifically for this path.
+- [x] 12 new unit tests across the 4 files (LINE_ITEM_AGGREGATION parsing, amount-field
+      parsing incl. the exact garbled-fragment reproduction, multi-item summing, mixed-
+      currency flagging, no-match fallthrough, and the vendor-name-collision fix with
+      its own dedicated regression test). 30/30 passing in `rag.service.test.ts`.
+- [x] `npx tsc --noEmit` clean; `npm test` at 162/163 (same pre-existing, unrelated
+      missing-sample-PDF failure noted in Task 5).
+- [x] Live-verified against the real dev server (E5 sidecar confirmed restarted and
+      healthy first, after an unrelated background-process stop mid-session): the exact
+      reported "computer" bug is fixed (real deterministic sum, no model arithmetic);
+      "summarize the total logistics amount" and "How much have I paid Express Cargo?"
+      both correctly return the vendor total (45810.00) unaffected by the new intent.
+
 ---
 
 ## Out of scope for this plan (explicit)

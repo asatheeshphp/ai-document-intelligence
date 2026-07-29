@@ -6,6 +6,7 @@ import type { SpendQueryService } from "@/services/spend-query.service";
 import type { ChatIntentService } from "@/services/chat-intent.service";
 import type { ProcessingRepository } from "@/repositories/processing.repository";
 import type { InvoiceStatusQueryService } from "@/services/invoice-status-query.service";
+import type { LineItemAggregationService } from "@/services/line-item-aggregation.service";
 
 function fakeSearchResult(overrides: Partial<SearchResultItem> = {}): SearchResultItem {
   return {
@@ -28,6 +29,10 @@ function fakeRepository(overrides: Record<string, unknown> = {}): ProcessingRepo
 
 function fakeInvoiceStatusQueryService(overrides: Record<string, unknown> = {}): InvoiceStatusQueryService {
   return { listByStatus: vi.fn().mockResolvedValue([]), ...overrides } as unknown as InvoiceStatusQueryService;
+}
+
+function fakeLineItemAggregationService(overrides: Record<string, unknown> = {}): LineItemAggregationService {
+  return { getLineItemTotal: vi.fn().mockResolvedValue(null), ...overrides } as unknown as LineItemAggregationService;
 }
 
 describe("RagService.answer — aggregation path", () => {
@@ -861,5 +866,152 @@ describe("RagService.answer — status-filter path", () => {
     expect(result.mode).toBe("computed");
     expect(result.answer).toBe("I couldn't find any overdue invoices.");
     expect(searchService.search).not.toHaveBeenCalled();
+  });
+});
+
+describe("RagService.answer — line-item aggregation path", () => {
+  it("answers with a real computed sum from each matched line item's own amount, never the model's arithmetic", async () => {
+    // Reproduces the confirmed live bug: "summarize the total computer invoice related
+    // amount" let the model pick a garbled fragment and do its own (sometimes wrong)
+    // arithmetic on top of it. This path never calls the model for the number at all.
+    const searchService = { search: vi.fn() } as unknown as SearchService;
+    const ollamaService = { chatCompletion: vi.fn() } as unknown as OllamaService;
+    const spendQueryService = { getVendorSpendSummary: vi.fn() } as unknown as SpendQueryService;
+    const chatIntentService = fakeChatIntentService({ type: "LINE_ITEM_AGGREGATION", keyword: "computer" });
+    const lineItemAggregationService = fakeLineItemAggregationService({
+      getLineItemTotal: vi.fn().mockResolvedValue({
+        keyword: "computer",
+        totalAmount: 4069.53,
+        currencies: ["USD"],
+        items: [
+          {
+            invoiceNumber: "27639",
+            vendorName: "SuperStore",
+            description: "Chromcraft Computer Table, with Bottom Storage, qty 3, amount 4069.53",
+            amount: 4069.53,
+          },
+        ],
+      }),
+    });
+
+    const service = new RagService(
+      searchService,
+      ollamaService,
+      spendQueryService,
+      chatIntentService,
+      fakeRepository(),
+      fakeInvoiceStatusQueryService(),
+      lineItemAggregationService
+    );
+    const result = await service.answer({ question: "summarize the total computer invoice related amount" });
+
+    expect(result.mode).toBe("computed");
+    expect(result.sources).toEqual([]);
+    expect(result.answer).toContain('matching "computer"');
+    expect(result.answer).toContain("USD 4069.53");
+    expect(result.answer).toContain("27639");
+    expect(searchService.search).not.toHaveBeenCalled();
+    expect(ollamaService.chatCompletion).not.toHaveBeenCalled();
+    expect(lineItemAggregationService.getLineItemTotal).toHaveBeenCalledWith("computer");
+  });
+
+  it("prefers a real vendor-name match over line-item aggregation when the keyword collides with a vendor's name", async () => {
+    // Reproduces the confirmed live bug, deterministically (3/3 identical calls): "the
+    // total logistics amount" classified as LINE_ITEM_AGGREGATION with a paraphrased
+    // keyword ("logistics services"), even though "Logistics" is literally part of a
+    // real vendor's name (Express Cargo & Logistics Solutions) -- giving a wrong total
+    // from unrelated line items instead of that vendor's real spend.
+    const searchService = { search: vi.fn() } as unknown as SearchService;
+    const ollamaService = {} as unknown as OllamaService;
+    const spendQueryService = {
+      getVendorSpendSummary: vi.fn().mockImplementation(({ vendorNamePattern }) => {
+        const pattern = new RegExp(vendorNamePattern, "i");
+        if (pattern.test("Express Cargo & Logistics Solutions")) {
+          return Promise.resolve({
+            vendorNames: ["Express Cargo & Logistics Solutions"],
+            invoiceCount: 1,
+            totalAmount: 45810,
+            currencies: ["INR"],
+          });
+        }
+        return Promise.resolve(null);
+      }),
+    } as unknown as SpendQueryService;
+    const chatIntentService = fakeChatIntentService({ type: "LINE_ITEM_AGGREGATION", keyword: "logistics services" });
+    const lineItemAggregationService = fakeLineItemAggregationService();
+
+    const service = new RagService(
+      searchService,
+      ollamaService,
+      spendQueryService,
+      chatIntentService,
+      fakeRepository(),
+      fakeInvoiceStatusQueryService(),
+      lineItemAggregationService
+    );
+    const result = await service.answer({ question: "summarize the total logistics amount" });
+
+    expect(result.mode).toBe("computed");
+    expect(result.answer).toContain("Express Cargo & Logistics Solutions");
+    expect(result.answer).toContain("INR 45810.00");
+    expect(lineItemAggregationService.getLineItemTotal).not.toHaveBeenCalled();
+  });
+
+  it("falls through to retrieval when no line items matched the keyword", async () => {
+    const searchResults = [fakeSearchResult({ chunkText: "unrelated text" })];
+    const searchService = { search: vi.fn().mockResolvedValue({ results: searchResults }) } as unknown as SearchService;
+    const ollamaService = {
+      chatCompletion: vi.fn().mockResolvedValue("Some retrieved answer"),
+    } as unknown as OllamaService;
+    const spendQueryService = { getVendorSpendSummary: vi.fn() } as unknown as SpendQueryService;
+    const chatIntentService = fakeChatIntentService({ type: "LINE_ITEM_AGGREGATION", keyword: "spaceship parts" });
+    const lineItemAggregationService = fakeLineItemAggregationService();
+
+    const service = new RagService(
+      searchService,
+      ollamaService,
+      spendQueryService,
+      chatIntentService,
+      fakeRepository(),
+      fakeInvoiceStatusQueryService(),
+      lineItemAggregationService
+    );
+    const result = await service.answer({ question: "How much did I spend on spaceship parts?" });
+
+    expect(result.mode).toBe("retrieved");
+    expect(searchService.search).toHaveBeenCalled();
+    expect(result.answer).toBe("Some retrieved answer");
+  });
+
+  it("flags mixed currencies instead of silently presenting one summed figure", async () => {
+    const searchService = { search: vi.fn() } as unknown as SearchService;
+    const ollamaService = {} as unknown as OllamaService;
+    const spendQueryService = { getVendorSpendSummary: vi.fn() } as unknown as SpendQueryService;
+    const chatIntentService = fakeChatIntentService({ type: "LINE_ITEM_AGGREGATION", keyword: "furniture" });
+    const lineItemAggregationService = fakeLineItemAggregationService({
+      getLineItemTotal: vi.fn().mockResolvedValue({
+        keyword: "furniture",
+        totalAmount: 1500,
+        currencies: ["USD", "INR"],
+        items: [
+          { invoiceNumber: "A", vendorName: "Vendor A", description: "Desk, amount 1000", amount: 1000 },
+          { invoiceNumber: "B", vendorName: "Vendor B", description: "Chair, amount 500", amount: 500 },
+        ],
+      }),
+    });
+
+    const service = new RagService(
+      searchService,
+      ollamaService,
+      spendQueryService,
+      chatIntentService,
+      fakeRepository(),
+      fakeInvoiceStatusQueryService(),
+      lineItemAggregationService
+    );
+    const result = await service.answer({ question: "What's the total for furniture?" });
+
+    expect(result.mode).toBe("computed");
+    expect(result.answer).toMatch(/different currencies/);
   });
 });

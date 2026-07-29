@@ -188,16 +188,24 @@ export interface DocumentClassificationOutcome {
 function buildChatIntentPrompt(question: string): string {
   return `You are deciding how to answer a question about a company's indexed invoices.
 
-Decide which of three categories the question falls into:
-- AGGREGATION: asking for a computed TOTAL/SUM of money spent with a specific vendor.
+Decide which of four categories the question falls into:
+- AGGREGATION: asking for a computed TOTAL/SUM of money spent with a specific VENDOR.
+- LINE_ITEM_AGGREGATION: asking for a computed TOTAL/SUM of money spent on a PRODUCT,
+  SERVICE, or CATEGORY (not a vendor name) -- e.g. "computer", "logistics services",
+  "furniture".
 - STATUS_FILTER: asking which invoices are paid, unpaid, or overdue -- a payment-status
   question, not a money-total question.
 - RETRIEVAL: anything else -- finding, listing, or summarizing invoice content.
 
-AGGREGATION examples:
+AGGREGATION examples (a VENDOR's total):
 - "How much have I paid Readylink?"
 - "What's my total spend with SuperStore this year?"
 - "How much did I pay Express Cargo between January and March 2026?"
+
+LINE_ITEM_AGGREGATION examples (a PRODUCT/CATEGORY's total, not a vendor):
+- "Summarize the total computer-related amount."
+- "How much did I spend on logistics services?"
+- "What's the total for furniture line items?"
 
 STATUS_FILTER examples:
 - "Any unpaid invoices?"
@@ -218,6 +226,8 @@ Copy the vendor name EXACTLY as it appears in the question, character for charac
 including every space between words -- do not join, split, or otherwise alter the
 spelling. For example, "Express Cargo" must stay "Express Cargo", not "ExpressCargo".
 
+If LINE_ITEM_AGGREGATION, extract the product/category keyword the same exact-copy way.
+
 If STATUS_FILTER, also decide which status: UNPAID (not yet paid, including overdue),
 OVERDUE (unpaid AND past its due date specifically), or PAID.
 
@@ -225,12 +235,14 @@ Return ONLY one line in exactly one of these formats:
 
 ANSWER: AGGREGATION vendor="<vendor name>" from=<YYYY-MM-DD> to=<YYYY-MM-DD>
 ANSWER: AGGREGATION vendor="<vendor name>"
+ANSWER: LINE_ITEM_AGGREGATION keyword="<product or category>"
 ANSWER: STATUS_FILTER status=<PAID|UNPAID|OVERDUE>
 ANSWER: RETRIEVAL
 
 Examples:
 ANSWER: AGGREGATION vendor="Readylink" from=2026-01-01 to=2026-12-31
 ANSWER: AGGREGATION vendor="SuperStore"
+ANSWER: LINE_ITEM_AGGREGATION keyword="computer"
 ANSWER: STATUS_FILTER status=UNPAID
 ANSWER: RETRIEVAL
 
@@ -241,7 +253,7 @@ ${question}
 }
 
 const CHAT_INTENT_PATTERN =
-  /ANSWER:\s*(AGGREGATION|RETRIEVAL|STATUS_FILTER)(?:\s+vendor="([^"]+)")?(?:\s+from=(\d{4}-\d{2}-\d{2}))?(?:\s+to=(\d{4}-\d{2}-\d{2}))?(?:\s+status=(PAID|UNPAID|OVERDUE))?/i;
+  /ANSWER:\s*(AGGREGATION|RETRIEVAL|STATUS_FILTER|LINE_ITEM_AGGREGATION)(?:\s+vendor="([^"]+)")?(?:\s+from=(\d{4}-\d{2}-\d{2}))?(?:\s+to=(\d{4}-\d{2}-\d{2}))?(?:\s+status=(PAID|UNPAID|OVERDUE))?(?:\s+keyword="([^"]+)")?/i;
 
 function parseChatIntentResponse(raw: string): ChatIntent | null {
   // Same "take the last match" reasoning as parseClassificationResponse -- the model
@@ -255,8 +267,9 @@ function parseChatIntentResponse(raw: string): ChatIntent | null {
   const from = match[3] || undefined;
   const to = match[4] || undefined;
   const status = match[5]?.toUpperCase() as ChatIntent["status"] | undefined;
+  const keyword = match[6] || undefined;
 
-  const result = ChatIntentSchema.safeParse({ type, vendor, from, to, status });
+  const result = ChatIntentSchema.safeParse({ type, vendor, from, to, status, keyword });
   return result.success ? result.data : null;
 }
 
@@ -374,7 +387,8 @@ export class OllamaService {
         raw,
         success: false,
         data: null,
-        error: 'Model response did not contain a parseable "ANSWER: AGGREGATION|RETRIEVAL|STATUS_FILTER" line.',
+        error:
+          'Model response did not contain a parseable "ANSWER: AGGREGATION|RETRIEVAL|STATUS_FILTER|LINE_ITEM_AGGREGATION" line.',
       };
     }
 

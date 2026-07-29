@@ -2,6 +2,7 @@ import { SearchService } from "@/services/search.service";
 import { OllamaService } from "@/services/ollama.service";
 import { SpendQueryService, type VendorSpendSummary } from "@/services/spend-query.service";
 import { InvoiceStatusQueryService, type InvoiceStatusSummaryItem } from "@/services/invoice-status-query.service";
+import { LineItemAggregationService, type LineItemAggregationSummary } from "@/services/line-item-aggregation.service";
 import { ChatIntentService } from "@/services/chat-intent.service";
 import { ProcessingRepository } from "@/repositories/processing.repository";
 import { hasMeaningfulTokens, extractMeaningfulTokens } from "@/utils/lexical-score";
@@ -237,6 +238,31 @@ function formatStatusFilterAnswer(invoices: InvoiceStatusSummaryItem[], status: 
   return `Found ${invoices.length} ${label} ${invoiceWord}:\n${lines.join("\n")}`;
 }
 
+// Fixed string template, deliberately NOT an LLM call -- same reasoning as
+// formatSpendAnswer/formatStatusFilterAnswer: the sum and its line items come straight
+// from LineItemAggregationService's own parsing of each chunk's "amount" field, never
+// touched or recomputed by the model.
+function formatLineItemAggregationAnswer(summary: LineItemAggregationSummary): string {
+  const amountLabel =
+    summary.currencies.length === 1
+      ? `${summary.currencies[0]} ${summary.totalAmount.toFixed(2)}`
+      : summary.totalAmount.toFixed(2);
+  const itemWord = summary.items.length === 1 ? "line item" : "line items";
+
+  const lines = summary.items.map((item) => {
+    const label = [item.invoiceNumber, item.vendorName].filter(Boolean).join(" — ");
+    return `- ${item.description.replace(/\n/g, " ")}${label ? ` (Invoice ${label})` : ""}`;
+  });
+
+  const base = `Found ${summary.items.length} ${itemWord} matching "${summary.keyword}", totaling ${amountLabel}:\n${lines.join("\n")}`;
+
+  if (summary.currencies.length > 1) {
+    return `${base}\nNote: these line items use different currencies (${summary.currencies.join(", ")}), so this total mixes units and may not be a meaningful figure.`;
+  }
+
+  return base;
+}
+
 export class RagService {
   constructor(
     private readonly searchService: SearchService = new SearchService(),
@@ -244,7 +270,8 @@ export class RagService {
     private readonly spendQueryService: SpendQueryService = new SpendQueryService(),
     private readonly chatIntentService: ChatIntentService = new ChatIntentService(),
     private readonly repository: ProcessingRepository = new ProcessingRepository(),
-    private readonly invoiceStatusQueryService: InvoiceStatusQueryService = new InvoiceStatusQueryService()
+    private readonly invoiceStatusQueryService: InvoiceStatusQueryService = new InvoiceStatusQueryService(),
+    private readonly lineItemAggregationService: LineItemAggregationService = new LineItemAggregationService()
   ) {}
 
   async answer(input: RagAnswerInput): Promise<RagAnswer> {
@@ -275,6 +302,37 @@ export class RagService {
       // itself a real, useful answer, not a failure to dead-end from).
       const invoices = await this.invoiceStatusQueryService.listByStatus(intent.status);
       return { answer: formatStatusFilterAnswer(invoices, intent.status), sources: [], mode: "computed" };
+    }
+
+    if (intent?.type === "LINE_ITEM_AGGREGATION" && intent.keyword) {
+      // Confirmed live, deterministically (3/3 identical calls): "summarize the total
+      // logistics amount" classified as LINE_ITEM_AGGREGATION with keyword "logistics
+      // services" (a paraphrase), even though "Logistics" is literally part of a real
+      // vendor's name (Express Cargo & Logistics Solutions) -- giving a wrong total
+      // from unrelated line items instead of that vendor's real spend. A vendor-name
+      // match is a much stronger, unambiguous signal than a semantic keyword search, so
+      // it's tried first regardless of which intent type the model picked, using each
+      // meaningful word of the keyword individually (the model's paraphrase as a whole
+      // phrase, e.g. "logistics services", won't literally match "Logistics Solutions").
+      for (const word of extractMeaningfulTokens(intent.keyword)) {
+        const vendorSummary = await this.spendQueryService.getVendorSpendSummary({
+          vendorNamePattern: word,
+          dateFrom: intent.from,
+          dateTo: intent.to,
+        });
+        if (vendorSummary) {
+          return { answer: formatSpendAnswer(vendorSummary, intent), sources: [], mode: "computed" };
+        }
+      }
+
+      const summary = await this.lineItemAggregationService.getLineItemTotal(intent.keyword);
+
+      if (summary) {
+        return { answer: formatLineItemAggregationAnswer(summary), sources: [], mode: "computed" };
+      }
+      // No line items matched that keyword either -- fall through to retrieval, same
+      // reasoning as AGGREGATION's vendor-match fallthrough: the extracted keyword
+      // might not be the right search term, but retrieval can still try.
     }
 
     const { results } = await this.searchService.search({

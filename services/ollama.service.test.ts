@@ -268,6 +268,18 @@ describe("OllamaService.detectChatIntent", () => {
     expect(outcome.data).toEqual({ type: "RETRIEVAL" });
   });
 
+  it("parses LINE_ITEM_AGGREGATION with a keyword", async () => {
+    vi.mocked(axios.post).mockResolvedValue({
+      data: { message: { content: 'ANSWER: LINE_ITEM_AGGREGATION keyword="computer"' } },
+    });
+
+    const service = new OllamaService();
+    const outcome = await service.detectChatIntent("Summarize the total computer invoice related amount");
+
+    expect(outcome.success).toBe(true);
+    expect(outcome.data).toEqual({ type: "LINE_ITEM_AGGREGATION", keyword: "computer" });
+  });
+
   it("parses STATUS_FILTER with status=UNPAID", async () => {
     vi.mocked(axios.post).mockResolvedValue({
       data: { message: { content: "ANSWER: STATUS_FILTER status=UNPAID" } },
