@@ -229,6 +229,55 @@ question is unresolved and deferred, not solved.
       `data/samples/` as the current (not `data/incoming/` as the historical) storage
       location.
 
+### Task 13: Fix unreliable document classification on borderline invoices — found while re-verifying `/api/documents/latest`
+
+**Files:** `services/ollama.service.ts`, `services/ollama.service.test.ts`,
+`services/document-classifier.service.ts`, `services/document-classifier.service.test.ts`,
+`schemas/document-classification.schema.ts`
+
+- [x] While re-testing `/api/documents/latest` on a real email-downloaded invoice (a
+      recurring ISP/broadband bill), found it repeatedly misclassified as `OTHER` by
+      `qwen2.5:1.5b` despite literally containing the text "TAX INVOICE" — confirmed via
+      10+ live calls, not a one-off fluke.
+- [x] Root cause, isolated via live testing: (1) schema-constrained JSON decoding gave
+      the model no room to reason and was near-deterministically wrong on this content;
+      (2) even allowing free-text reasoning first, the model sometimes wrote a correct
+      conclusion ("this is an invoice for internet services") and then still answered
+      `OTHER` — a genuine self-consistency failure at this model size, not a
+      prompt-clarity problem.
+- [x] Fix: broadened the classification prompt to explicitly cover recurring
+      subscription/utility bills as `INVOICE`; switched from schema-constrained JSON to
+      reasoning-then-`ANSWER: TYPE confidence`-line parsing; added a 3-call majority vote
+      in `DocumentClassifierService`. Now-unused `DocumentClassificationJsonSchema`
+      removed.
+- [x] Live-verified: the previously-misclassified real invoice now classifies as
+      `INVOICE` (confidence 1) and fully re-extracts correctly, restoring the `Invoice`
+      record this investigation started from. Commit `e9fe6ad`.
+
+### Task 14: Duplicate invoice check (vendor + invoice number + date) — new feature, explicit request
+
+**Files:** `services/document-ingestion.service.ts`, `services/document-ingestion.service.test.ts`,
+`schemas/invoice-mapper.ts`, `schemas/invoice-mapper.test.ts`
+
+- [x] Before creating a new `Invoice`, checks for an existing one matching vendor name +
+      invoice number + invoice date together (not invoice number alone, since two
+      unrelated vendors could reuse the same numbering scheme). Excludes the current
+      document's own prior invoice, so reprocessing never self-flags.
+- [x] On a match: skips creating the new `Invoice` entirely, returns a message
+      identifying the existing document. Only runs when all three fields are present.
+- [x] Found and fixed a real blocking bug while live-testing this: `invoice-mapper.ts`'s
+      `toDate()` used native `new Date(value)`, which silently returns `Invalid Date`
+      (→ `undefined`) for day-first `DD/MM/YYYY` dates — confirmed live on a real
+      invoice's `"19/03/2023"`. This wasn't just blocking the duplicate check; it also
+      means any `DD/MM/YYYY` invoice was silently excluded from the date-range search
+      filter built earlier this session (no `invoiceDate` to filter on at all). Fixed
+      with explicit format parsing via `dayjs` (day-first prioritized for genuinely
+      ambiguous `D/M` dates, matching this dataset's convention), anchored to UTC to
+      match `Date.UTC(...)` usage elsewhere in the app.
+- [x] Live-verified end to end: ingesting a copy of an already-processed invoice (same
+      vendor/number/date) is correctly rejected with a message naming the original
+      document; a genuinely new invoice still ingests normally. Commit `3fd6291`.
+
 ---
 
 ## Out of scope for this plan (explicit)
