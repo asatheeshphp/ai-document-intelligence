@@ -17,9 +17,11 @@ interface DocumentsTableProps {
   items: DocumentSummaryItem[];
   onView: (documentId: string) => void;
   onReindex: (documentId: string) => void;
+  onProcessAnyway: (documentId: string) => void;
   onDeleteClick: (documentId: string) => void;
   onCancelDelete: () => void;
   reindexingId: string | null;
+  processingAnywayId: string | null;
   confirmingDeleteId: string | null;
   deletingId: string | null;
 }
@@ -39,9 +41,11 @@ export function DocumentsTable({
   items,
   onView,
   onReindex,
+  onProcessAnyway,
   onDeleteClick,
   onCancelDelete,
   reindexingId,
+  processingAnywayId,
   confirmingDeleteId,
   deletingId,
 }: DocumentsTableProps) {
@@ -66,6 +70,8 @@ export function DocumentsTable({
             const isConfirmingDelete = confirmingDeleteId === item.documentId;
             const isReindexing = reindexingId === item.documentId;
             const isDeleting = deletingId === item.documentId;
+            const isProcessingAnyway = processingAnywayId === item.documentId;
+            const isDuplicateReview = item.status === "DUPLICATE_REVIEW";
 
             return (
               <tr key={item.documentId} className="text-zinc-700 dark:text-zinc-300">
@@ -121,6 +127,17 @@ export function DocumentsTable({
                         >
                           {isReindexing ? "Reindexing…" : "Re-index"}
                         </button>
+                        {isDuplicateReview && (
+                          <button
+                            type="button"
+                            onClick={() => onProcessAnyway(item.documentId)}
+                            disabled={isProcessingAnyway}
+                            title="A matching invoice already exists (same vendor, number, and date) -- create this one anyway"
+                            className="rounded-md border border-orange-200 px-2.5 py-1 text-xs font-medium text-orange-700 hover:bg-orange-50 disabled:opacity-50 dark:border-orange-900 dark:text-orange-400 dark:hover:bg-orange-950"
+                          >
+                            {isProcessingAnyway ? "Processing…" : "Process Anyway"}
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={() => onDeleteClick(item.documentId)}

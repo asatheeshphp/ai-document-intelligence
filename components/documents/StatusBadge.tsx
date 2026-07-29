@@ -6,6 +6,7 @@ const STATUS_STYLES: Record<string, string> = {
   OCR_REQUIRED: "bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-400",
   OCR_COMPLETE: "bg-blue-50 text-blue-700 dark:bg-blue-950 dark:text-blue-400",
   FAILED: "bg-red-50 text-red-700 dark:bg-red-950 dark:text-red-400",
+  DUPLICATE_REVIEW: "bg-orange-50 text-orange-700 dark:bg-orange-950 dark:text-orange-400",
 };
 
 export function StatusBadge({ status }: { status: string }) {

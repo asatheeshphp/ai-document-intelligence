@@ -15,6 +15,7 @@ export default function DocumentsPage() {
 
   const [viewingId, setViewingId] = useState<string | null>(null);
   const [reindexingId, setReindexingId] = useState<string | null>(null);
+  const [processingAnywayId, setProcessingAnywayId] = useState<string | null>(null);
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -95,6 +96,23 @@ export default function DocumentsPage() {
     }
   }
 
+  async function handleProcessAnyway(documentId: string) {
+    setProcessingAnywayId(documentId);
+    setActionError(null);
+    try {
+      const response = await fetch(`/api/documents/${documentId}/process-anyway`, { method: "POST" });
+      const data = await response.json();
+      if (!data.success) {
+        throw new Error(data.error ?? "Failed to process document");
+      }
+      goToPage(page);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Failed to process document");
+    } finally {
+      setProcessingAnywayId(null);
+    }
+  }
+
   async function performDelete(documentId: string) {
     setDeletingId(documentId);
     setActionError(null);
@@ -164,9 +182,11 @@ export default function DocumentsPage() {
               items={items}
               onView={setViewingId}
               onReindex={handleReindex}
+              onProcessAnyway={handleProcessAnyway}
               onDeleteClick={handleDeleteClick}
               onCancelDelete={() => setConfirmingDeleteId(null)}
               reindexingId={reindexingId}
+              processingAnywayId={processingAnywayId}
               confirmingDeleteId={confirmingDeleteId}
               deletingId={deletingId}
             />
