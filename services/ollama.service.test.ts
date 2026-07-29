@@ -155,9 +155,17 @@ describe("OllamaService.classifyDocument", () => {
     vi.mocked(axios.post).mockReset();
   });
 
-  it("parses a valid schema-constrained classification response", async () => {
+  it("parses a reasoning-then-answer classification response", async () => {
+    // Schema-constrained JSON decoding was measured live to be nearly deterministically
+    // wrong on borderline content (see buildClassificationPrompt's comment) -- letting
+    // the model reason in free text first, then parsing a final answer line, replaced
+    // it.
     vi.mocked(axios.post).mockResolvedValue({
-      data: { message: { content: JSON.stringify({ documentType: "INVOICE", confidence: 0.88 }) } },
+      data: {
+        message: {
+          content: "This document bills a customer for goods delivered.\n\nANSWER: INVOICE 0.88",
+        },
+      },
     });
 
     const service = new OllamaService();
@@ -167,9 +175,23 @@ describe("OllamaService.classifyDocument", () => {
     expect(outcome.data).toEqual({ documentType: "INVOICE", confidence: 0.88 });
   });
 
-  it("returns a failure outcome on invalid JSON", async () => {
+  it("accepts an answer line with no stated confidence, defaulting to a moderate value", async () => {
+    // Observed live: the model sometimes writes "**ANSWER: INVOICE**" with no
+    // confidence number despite the prompt requesting one.
     vi.mocked(axios.post).mockResolvedValue({
-      data: { message: { content: "not json" } },
+      data: { message: { content: "**ANSWER: INVOICE**\n\nThis is clearly an invoice." } },
+    });
+
+    const service = new OllamaService();
+    const outcome = await service.classifyDocument("some invoice text");
+
+    expect(outcome.success).toBe(true);
+    expect(outcome.data).toEqual({ documentType: "INVOICE", confidence: 0.75 });
+  });
+
+  it("returns a failure outcome when no ANSWER line is present", async () => {
+    vi.mocked(axios.post).mockResolvedValue({
+      data: { message: { content: "I'm not sure what this document is." } },
     });
 
     const service = new OllamaService();

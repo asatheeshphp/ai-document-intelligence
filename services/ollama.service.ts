@@ -5,11 +5,7 @@ import {
   InvoiceExtractionJsonSchema,
   type InvoiceExtraction,
 } from "@/schemas/invoice.schema";
-import {
-  DocumentClassificationSchema,
-  DocumentClassificationJsonSchema,
-  type DocumentClassification,
-} from "@/schemas/document-classification.schema";
+import { DocumentClassificationSchema, type DocumentClassification } from "@/schemas/document-classification.schema";
 
 // Measured against this CPU-only Ollama setup: qwen2.5vl:7b took ~308s to transcribe
 // one real invoice photo. Multiplying by image count covers multi-page PDFs sent as
@@ -81,13 +77,57 @@ export interface InvoiceExtractionOutcome {
   error?: string;
 }
 
+// Schema-constrained JSON decoding (forcing the model straight into
+// {documentType, confidence} with no room to reason first) was measured live to be
+// nearly deterministically wrong on borderline content: a real recurring utility bill
+// classified as OTHER on 10+ separate schema-constrained calls in a row, despite
+// clearly being an invoice. Letting the model reason in free text first, then parse a
+// final answer line, was the only approach observed to sometimes reach the correct
+// answer (see classifyDocument's parseClassificationResponse) -- a small model appears
+// to need that reasoning space to apply nuanced instructions at all, not just to
+// explain itself after the fact.
 function buildClassificationPrompt(documentText: string): string {
-  return `Classify the document type of the text below into exactly one of: INVOICE, RECEIPT, PURCHASE_ORDER, CONTRACT, RESUME, OTHER. Pick "OTHER" if none of the specific types clearly match. Also give a confidence between 0 and 1 for your classification.
+  return `Classify the document type of the text below into exactly one of: INVOICE, RECEIPT, PURCHASE_ORDER, CONTRACT, RESUME, OTHER. Pick "OTHER" if none of the specific types clearly match.
+
+INVOICE includes ANY document billing a party for goods or services, one-time or
+recurring -- this covers ordinary trade invoices as well as recurring subscription and
+utility bills (internet, mobile/telecom, electricity, water, gas, cable/DTH, SaaS, and
+similar recurring services). A document is still an INVOICE even if most of its content
+is about the underlying service/plan/subscription details (e.g. package name, billing
+period, account/customer ID, service address) rather than an itemized list of physical
+goods -- what matters is that it is requesting payment for something provided, not
+whether it looks like a traditional line-item trade invoice.
+
+First, briefly explain your reasoning in 1-3 sentences. Then, on its own final line,
+write exactly: ANSWER: <TYPE> <confidence>
+where <TYPE> is one of INVOICE, RECEIPT, PURCHASE_ORDER, CONTRACT, RESUME, OTHER, and
+<confidence> is a number between 0 and 1.
 
 Document text:
 """
 ${documentText.slice(0, 4000)}
 """`;
+}
+
+// The confidence number is optional in the match -- observed live: the model
+// sometimes writes "**ANSWER: INVOICE**" with no confidence at all, formatting
+// requested but not always followed exactly. A correct type with no stated confidence
+// shouldn't be thrown away as a parse failure; it falls back to a moderate default
+// instead of the strongest (1) or weakest (0) value, since the model didn't actually
+// state either extreme.
+const CLASSIFICATION_ANSWER_PATTERN =
+  /ANSWER:\s*(INVOICE|RECEIPT|PURCHASE_ORDER|CONTRACT|RESUME|OTHER)(?:\s+([0-9]*\.?[0-9]+))?/i;
+const DEFAULT_CONFIDENCE_WHEN_UNSTATED = 0.75;
+
+function parseClassificationResponse(raw: string): DocumentClassification | null {
+  const match = raw.match(CLASSIFICATION_ANSWER_PATTERN);
+  if (!match) return null;
+
+  const documentType = match[1].toUpperCase() as DocumentClassification["documentType"];
+  const confidence = match[2] != null ? Math.min(1, Math.max(0, parseFloat(match[2]))) : DEFAULT_CONFIDENCE_WHEN_UNSTATED;
+
+  const result = DocumentClassificationSchema.safeParse({ documentType, confidence });
+  return result.success ? result.data : null;
 }
 
 export interface DocumentClassificationOutcome {
@@ -152,32 +192,28 @@ export class OllamaService {
         model,
         stream: false,
         messages: [{ role: "user", content: prompt }],
-        format: DocumentClassificationJsonSchema,
         options: { temperature: 0.1 },
       },
       {
-        // Same reasoning as extractInvoiceData's timeout, but this schema is tiny
-        // (two fields) compared to the full invoice schema, so schema-constrained
-        // decoding overhead is much smaller — 60s is ample.
+        // No longer schema-constrained (see buildClassificationPrompt's comment) --
+        // free-text reasoning plus a short answer line is still fast; 60s remains ample.
         timeout: 60000,
       }
     );
 
     const raw = String(response.data?.message?.content ?? "");
 
-    let parsedJson: unknown;
-    try {
-      parsedJson = JSON.parse(raw);
-    } catch {
-      return { raw, success: false, data: null, error: "Model response was not valid JSON." };
+    const data = parseClassificationResponse(raw);
+    if (!data) {
+      return {
+        raw,
+        success: false,
+        data: null,
+        error: 'Model response did not contain a parseable "ANSWER: <TYPE> <confidence>" line.',
+      };
     }
 
-    const result = DocumentClassificationSchema.safeParse(parsedJson);
-    if (!result.success) {
-      return { raw, success: false, data: null, error: result.error.message };
-    }
-
-    return { raw, success: true, data: result.data };
+    return { raw, success: true, data };
   }
 
   async embedText(text: string, model: string = env.OLLAMA_EMBED_MODEL): Promise<number[]> {

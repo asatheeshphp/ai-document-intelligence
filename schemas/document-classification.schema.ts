@@ -15,7 +15,3 @@ export const DocumentClassificationSchema = z.object({
 });
 
 export type DocumentClassification = z.infer<typeof DocumentClassificationSchema>;
-
-export const DocumentClassificationJsonSchema = z.toJSONSchema(DocumentClassificationSchema, {
-  target: "draft-2020-12",
-});
