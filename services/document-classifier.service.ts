@@ -40,8 +40,8 @@ export class DocumentClassifierService {
    * Classifies a document by asking the model CLASSIFICATION_VOTES times and taking a
    * majority vote across the attempts, rather than trusting a single call -- see the
    * constant's comment for why a single shot isn't reliable enough on borderline
-   * content. A failed individual attempt counts as an "OTHER, 0 confidence" vote rather
-   * than aborting the whole classification.
+   * content. A failed individual attempt counts as a "NOT_INVOICE, 0 confidence" vote
+   * rather than aborting the whole classification.
    */
   async classify(text: string): Promise<DocumentClassification> {
     const votes: DocumentClassification[] = [];
@@ -49,8 +49,8 @@ export class DocumentClassifierService {
     for (let i = 0; i < CLASSIFICATION_VOTES; i += 1) {
       const outcome = await this.ollamaService.classifyDocument(text);
       if (!outcome.success || !outcome.data) {
-        console.warn("Document classification attempt failed, counting as OTHER:", outcome.error);
-        votes.push({ documentType: "OTHER", confidence: 0 });
+        console.warn("Document classification attempt failed, counting as NOT_INVOICE:", outcome.error);
+        votes.push({ documentType: "NOT_INVOICE", confidence: 0 });
       } else {
         votes.push(outcome.data);
       }

@@ -29,8 +29,7 @@ describe("DocumentClassificationSchema", () => {
     expect(result.success).toBe(false);
   });
 
-  it("exposes INVOICE and OTHER in the label set", () => {
-    expect(DocumentTypeLabels).toContain("INVOICE");
-    expect(DocumentTypeLabels).toContain("OTHER");
+  it("exposes only the binary INVOICE/NOT_INVOICE label set", () => {
+    expect(DocumentTypeLabels).toEqual(["INVOICE", "NOT_INVOICE"]);
   });
 });

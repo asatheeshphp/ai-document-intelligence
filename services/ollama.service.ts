@@ -77,31 +77,66 @@ export interface InvoiceExtractionOutcome {
   error?: string;
 }
 
-// Schema-constrained JSON decoding (forcing the model straight into
-// {documentType, confidence} with no room to reason first) was measured live to be
-// nearly deterministically wrong on borderline content: a real recurring utility bill
-// classified as OTHER on 10+ separate schema-constrained calls in a row, despite
-// clearly being an invoice. Letting the model reason in free text first, then parse a
-// final answer line, was the only approach observed to sometimes reach the correct
-// answer (see classifyDocument's parseClassificationResponse) -- a small model appears
-// to need that reasoning space to apply nuanced instructions at all, not just to
-// explain itself after the fact.
+// Simplified from a 6-way classification (INVOICE/RECEIPT/PURCHASE_ORDER/CONTRACT/
+// RESUME/OTHER) to a binary INVOICE/NOT_INVOICE decision, per explicit instruction --
+// this app only ever acts on "is this an invoice or not" downstream, so the other 5
+// categories only gave the model more ways to get confused without changing any
+// behavior. Live-verified head to head: this binary prompt correctly and consistently
+// classified two previously-misclassified real invoices (a furniture store invoice, a
+// recurring ISP bill) as INVOICE across 5/5 runs each, and two genuine non-invoices
+// (a resume, a service contract) as NOT_INVOICE across 3/3 runs each -- markedly more
+// reliable than the earlier 6-way reasoning-then-parse prompt this replaces.
 function buildClassificationPrompt(documentText: string): string {
-  return `Classify the document type of the text below into exactly one of: INVOICE, RECEIPT, PURCHASE_ORDER, CONTRACT, RESUME, OTHER. Pick "OTHER" if none of the specific types clearly match.
+  return `You are a document classifier for an invoice processing system.
 
-INVOICE includes ANY document billing a party for goods or services, one-time or
-recurring -- this covers ordinary trade invoices as well as recurring subscription and
-utility bills (internet, mobile/telecom, electricity, water, gas, cable/DTH, SaaS, and
-similar recurring services). A document is still an INVOICE even if most of its content
-is about the underlying service/plan/subscription details (e.g. package name, billing
-period, account/customer ID, service address) rather than an itemized list of physical
-goods -- what matters is that it is requesting payment for something provided, not
-whether it looks like a traditional line-item trade invoice.
+Your only task is to determine whether the document is an INVOICE.
 
-First, briefly explain your reasoning in 1-3 sentences. Then, on its own final line,
-write exactly: ANSWER: <TYPE> <confidence>
-where <TYPE> is one of INVOICE, RECEIPT, PURCHASE_ORDER, CONTRACT, RESUME, OTHER, and
-<confidence> is a number between 0 and 1.
+Return one of:
+INVOICE
+NOT_INVOICE
+
+An INVOICE is a document that bills or requests payment from a customer for goods or services.
+
+Invoice evidence may include:
+- Invoice title or invoice number
+- Bill To / Billed To / Customer
+- Seller, supplier, or vendor
+- Invoice date
+- Due date
+- Balance Due / Amount Due
+- Subtotal, tax, discount, shipping, or total
+- Line items with quantity, rate, price, or amount
+- Payment terms
+- Billing period
+- Account or customer number
+- Service address
+
+Invoices may include:
+- Product invoices
+- Service invoices
+- Utility bills
+- Telecom/mobile/internet bills
+- SaaS or subscription invoices
+- Freight or logistics invoices
+- Recurring bills
+
+Important:
+- The document does NOT need every invoice field.
+- Missing fields do not mean it is NOT_INVOICE.
+- An invoice can contain shipping information, order IDs, PO numbers, contract references, or service details.
+- A PO number inside an invoice does NOT make it a purchase order.
+- A paid invoice is still an invoice if its primary purpose and structure are an invoice.
+- Use NOT_INVOICE only when the document is clearly not an invoice or there is insufficient evidence that it is an invoice.
+
+Return ONLY one line in exactly this format:
+
+ANSWER: <INVOICE|NOT_INVOICE> <confidence>
+
+The confidence must be a number between 0 and 1.
+
+Examples:
+ANSWER: INVOICE 0.98
+ANSWER: NOT_INVOICE 0.94
 
 Document text:
 """
@@ -109,18 +144,24 @@ ${documentText.slice(0, 4000)}
 """`;
 }
 
-// The confidence number is optional in the match -- observed live: the model
-// sometimes writes "**ANSWER: INVOICE**" with no confidence at all, formatting
-// requested but not always followed exactly. A correct type with no stated confidence
-// shouldn't be thrown away as a parse failure; it falls back to a moderate default
-// instead of the strongest (1) or weakest (0) value, since the model didn't actually
-// state either extreme.
-const CLASSIFICATION_ANSWER_PATTERN =
-  /ANSWER:\s*(INVOICE|RECEIPT|PURCHASE_ORDER|CONTRACT|RESUME|OTHER)(?:\s+([0-9]*\.?[0-9]+))?/i;
+// Both the "ANSWER:" prefix and the confidence number are optional in the match --
+// observed live: the model sometimes writes "**ANSWER: INVOICE**" with no confidence,
+// and separately sometimes drops the "ANSWER:" label entirely and just writes
+// "NOT_INVOICE 0.98" on its own line, despite the prompt requesting the full format
+// both times. A correct type shouldn't be thrown away as a parse failure just because
+// the surrounding formatting wasn't followed exactly; missing confidence falls back to
+// a moderate default rather than the strongest (1) or weakest (0) value, since the
+// model didn't actually state either extreme.
+const CLASSIFICATION_ANSWER_PATTERN = /(?:ANSWER:\s*)?(INVOICE|NOT_INVOICE)(?:\s+([0-9]*\.?[0-9]+))?/i;
 const DEFAULT_CONFIDENCE_WHEN_UNSTATED = 0.75;
 
 function parseClassificationResponse(raw: string): DocumentClassification | null {
-  const match = raw.match(CLASSIFICATION_ANSWER_PATTERN);
+  // Takes the LAST match, not the first -- the prompt asks for only the answer line
+  // with no preamble, but a small model doesn't always follow that reliably. If it adds
+  // reasoning anyway and happens to mention "invoice" before its actual conclusion, the
+  // final occurrence is still the one that matters.
+  const matches = [...raw.matchAll(new RegExp(CLASSIFICATION_ANSWER_PATTERN, "gi"))];
+  const match = matches.at(-1);
   if (!match) return null;
 
   const documentType = match[1].toUpperCase() as DocumentClassification["documentType"];

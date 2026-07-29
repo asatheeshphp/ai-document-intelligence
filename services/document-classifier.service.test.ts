@@ -35,21 +35,21 @@ describe("DocumentClassifierService", () => {
     expect(ollama.classifyDocument).toHaveBeenCalledTimes(3);
   });
 
-  it("falls back to OTHER with zero confidence when every attempt fails", async () => {
+  it("falls back to NOT_INVOICE with zero confidence when every attempt fails", async () => {
     const ollama = fakeOllamaService({ success: false, data: null });
     const service = new DocumentClassifierService(ollama);
 
     const result = await service.classify("garbled text");
 
-    expect(result).toEqual({ documentType: "OTHER", confidence: 0 });
+    expect(result).toEqual({ documentType: "NOT_INVOICE", confidence: 0 });
   });
 
-  it("takes the majority vote when attempts disagree (2 INVOICE vs 1 OTHER)", async () => {
-    // Mirrors the confirmed live failure mode: a model can answer OTHER on one attempt
-    // despite the document genuinely being an invoice on the other attempts.
+  it("takes the majority vote when attempts disagree (2 INVOICE vs 1 NOT_INVOICE)", async () => {
+    // Mirrors the confirmed live failure mode: a model can answer NOT_INVOICE on one
+    // attempt despite the document genuinely being an invoice on the other attempts.
     const ollama = fakeOllamaServiceWithSequence([
       { success: true, data: { documentType: "INVOICE", confidence: 1 } },
-      { success: true, data: { documentType: "OTHER", confidence: 1 } },
+      { success: true, data: { documentType: "NOT_INVOICE", confidence: 1 } },
       { success: true, data: { documentType: "INVOICE", confidence: 0.8 } },
     ]);
     const service = new DocumentClassifierService(ollama);
@@ -60,7 +60,7 @@ describe("DocumentClassifierService", () => {
     expect(result.confidence).toBeCloseTo(0.9);
   });
 
-  it("counts a failed individual attempt as an OTHER vote rather than aborting", async () => {
+  it("counts a failed individual attempt as a NOT_INVOICE vote rather than aborting", async () => {
     const ollama = fakeOllamaServiceWithSequence([
       { success: true, data: { documentType: "INVOICE", confidence: 0.9 } },
       { success: false, data: null },

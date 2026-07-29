@@ -9,8 +9,15 @@ export type DocumentStatus =
   | "OCR_COMPLETE"
   | "FAILED";
 
+// RECEIPT/PURCHASE_ORDER/CONTRACT/RESUME/OTHER are retained only for backward
+// compatibility with already-stored rows from the earlier 6-way classifier -- nothing
+// downstream ever differentiated between them (only INVOICE vs. not-INVOICE mattered),
+// so the classifier itself was simplified to a binary INVOICE/NOT_INVOICE decision (see
+// schemas/document-classification.schema.ts). New rows only ever get INVOICE,
+// NOT_INVOICE, or UNKNOWN (before classification runs).
 export type DocumentType =
   | "INVOICE"
+  | "NOT_INVOICE"
   | "RECEIPT"
   | "PURCHASE_ORDER"
   | "CONTRACT"
@@ -43,7 +50,7 @@ const DocumentSchema = new Schema<IDocument>(
     emailId: { type: Schema.Types.ObjectId, ref: "Email", required: true, index: true },
     documentType: {
       type: String,
-      enum: ["INVOICE", "RECEIPT", "PURCHASE_ORDER", "CONTRACT", "RESUME", "OTHER", "UNKNOWN"],
+      enum: ["INVOICE", "NOT_INVOICE", "RECEIPT", "PURCHASE_ORDER", "CONTRACT", "RESUME", "OTHER", "UNKNOWN"],
       default: "UNKNOWN",
       index: true,
     },

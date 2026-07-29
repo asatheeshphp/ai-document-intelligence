@@ -154,7 +154,7 @@ describe("DocumentIngestionService.processLocalDocument — re-ingestion", () =>
     } as unknown as VisionExtractionService;
 
     const documentClassifierService = {
-      classify: vi.fn().mockResolvedValue({ documentType: "OTHER", confidence: 0.7 }),
+      classify: vi.fn().mockResolvedValue({ documentType: "NOT_INVOICE", confidence: 0.7 }),
     } as unknown as DocumentClassifierService;
 
     const ollamaService = { extractInvoiceData: vi.fn() } as unknown as OllamaService;
