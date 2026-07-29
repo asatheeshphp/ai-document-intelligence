@@ -7,6 +7,7 @@ export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   sources?: SearchResultItem[];
+  mode?: "computed" | "retrieved";
 }
 
 interface ChatMessageBubbleProps {
@@ -28,6 +29,12 @@ export function ChatMessageBubble({ message }: ChatMessageBubbleProps) {
       >
         <p className="whitespace-pre-line">{message.content}</p>
 
+        {!isUser && message.mode === "computed" && (
+          <span className="mt-2 inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400">
+            Computed from invoice records
+          </span>
+        )}
+
         {!isUser && message.sources && message.sources.length > 0 && (
           <div className="mt-2 border-t border-zinc-100 pt-2 dark:border-zinc-800">
             <button
@@ -35,7 +42,7 @@ export function ChatMessageBubble({ message }: ChatMessageBubbleProps) {
               onClick={() => setShowSources((v) => !v)}
               className="text-xs font-medium text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
             >
-              {showSources ? "Hide sources" : `Sources (${message.sources.length})`}
+              {showSources ? "Hide sources" : `Retrieved from ${message.sources.length} source${message.sources.length === 1 ? "" : "s"}`}
             </button>
 
             {showSources && (

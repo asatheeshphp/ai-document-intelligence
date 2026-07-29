@@ -7,6 +7,7 @@ const EXAMPLE_QUESTIONS = [
   "Summarize the invoice from ABC Technologies",
   "Which invoices mention GST?",
   "What products or services were billed for in July?",
+  "How much have I paid Readylink?",
 ];
 
 export default function ChatPage() {
@@ -41,7 +42,10 @@ export default function ChatPage() {
         throw new Error(data.error ?? "Chat failed");
       }
 
-      setMessages([...nextMessages, { role: "assistant", content: data.answer, sources: data.sources }]);
+      setMessages([
+        ...nextMessages,
+        { role: "assistant", content: data.answer, sources: data.sources, mode: data.mode },
+      ]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Chat failed");
     } finally {

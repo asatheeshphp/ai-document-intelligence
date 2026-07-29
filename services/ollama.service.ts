@@ -6,6 +6,7 @@ import {
   type InvoiceExtraction,
 } from "@/schemas/invoice.schema";
 import { DocumentClassificationSchema, type DocumentClassification } from "@/schemas/document-classification.schema";
+import { ChatIntentSchema, type ChatIntent } from "@/schemas/chat-intent.schema";
 
 // Measured against this CPU-only Ollama setup: qwen2.5vl:7b took ~308s to transcribe
 // one real invoice photo. Multiplying by image count covers multi-page PDFs sent as
@@ -178,6 +179,76 @@ export interface DocumentClassificationOutcome {
   error?: string;
 }
 
+// Distinguishes questions asking for a computed total ("how much have I paid X") from
+// everything else (retrieval/summarization questions like "what did this invoice say").
+// Follows the same reasoning-then-ANSWER-line pattern as buildClassificationPrompt --
+// schema-constrained JSON decoding was measured unreliable on this model for the
+// invoice classifier, and there is no reason to expect this smaller, similarly
+// judgment-based decision to fare any better.
+function buildChatIntentPrompt(question: string): string {
+  return `You are deciding how to answer a question about a company's indexed invoices.
+
+Decide whether the question is asking for a computed TOTAL/SUM of money spent with a
+specific vendor (AGGREGATION), or anything else -- finding, listing, or summarizing
+invoice content (RETRIEVAL).
+
+AGGREGATION examples:
+- "How much have I paid Readylink?"
+- "What's my total spend with SuperStore this year?"
+- "How much did I pay Express Cargo between January and March 2026?"
+
+RETRIEVAL examples:
+- "What did the Readylink invoice say?"
+- "Which invoices mention GST?"
+- "Summarize the invoice from ABC Technologies."
+
+If AGGREGATION, also extract the vendor name (as mentioned in the question, not
+necessarily the full legal name) and, if a time period is mentioned, a from/to date
+range in YYYY-MM-DD format. Do not invent a date range if none is mentioned.
+
+Return ONLY one line in exactly one of these formats:
+
+ANSWER: AGGREGATION vendor="<vendor name>" from=<YYYY-MM-DD> to=<YYYY-MM-DD>
+ANSWER: AGGREGATION vendor="<vendor name>"
+ANSWER: RETRIEVAL
+
+Examples:
+ANSWER: AGGREGATION vendor="Readylink" from=2026-01-01 to=2026-12-31
+ANSWER: AGGREGATION vendor="SuperStore"
+ANSWER: RETRIEVAL
+
+Question:
+"""
+${question}
+"""`;
+}
+
+const CHAT_INTENT_PATTERN =
+  /ANSWER:\s*(AGGREGATION|RETRIEVAL)(?:\s+vendor="([^"]+)")?(?:\s+from=(\d{4}-\d{2}-\d{2}))?(?:\s+to=(\d{4}-\d{2}-\d{2}))?/i;
+
+function parseChatIntentResponse(raw: string): ChatIntent | null {
+  // Same "take the last match" reasoning as parseClassificationResponse -- the model
+  // isn't always reliable about outputting only the answer line with no preamble.
+  const matches = [...raw.matchAll(new RegExp(CHAT_INTENT_PATTERN, "gi"))];
+  const match = matches.at(-1);
+  if (!match) return null;
+
+  const type = match[1].toUpperCase() as ChatIntent["type"];
+  const vendor = match[2] || undefined;
+  const from = match[3] || undefined;
+  const to = match[4] || undefined;
+
+  const result = ChatIntentSchema.safeParse({ type, vendor, from, to });
+  return result.success ? result.data : null;
+}
+
+export interface ChatIntentOutcome {
+  raw: string;
+  success: boolean;
+  data: ChatIntent | null;
+  error?: string;
+}
+
 export class OllamaService {
   async extractInvoiceData(
     documentText: string,
@@ -251,6 +322,41 @@ export class OllamaService {
         success: false,
         data: null,
         error: 'Model response did not contain a parseable "ANSWER: <TYPE> <confidence>" line.',
+      };
+    }
+
+    return { raw, success: true, data };
+  }
+
+  async detectChatIntent(
+    question: string,
+    model: string = env.OLLAMA_CHAT_MODEL
+  ): Promise<ChatIntentOutcome> {
+    const baseUrl = env.OLLAMA_BASE_URL.replace(/\/$/, "");
+    const prompt = buildChatIntentPrompt(question);
+
+    const response = await axios.post(
+      `${baseUrl}/api/chat`,
+      {
+        model,
+        stream: false,
+        messages: [{ role: "user", content: prompt }],
+        options: { temperature: 0.1 },
+      },
+      {
+        timeout: 60000,
+      }
+    );
+
+    const raw = String(response.data?.message?.content ?? "");
+
+    const data = parseChatIntentResponse(raw);
+    if (!data) {
+      return {
+        raw,
+        success: false,
+        data: null,
+        error: 'Model response did not contain a parseable "ANSWER: AGGREGATION|RETRIEVAL" line.',
       };
     }
 

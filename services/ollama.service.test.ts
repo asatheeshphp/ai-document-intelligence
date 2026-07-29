@@ -221,3 +221,78 @@ describe("OllamaService.translateToEnglish", () => {
     expect(body.messages[0].content).toContain("சரக்குக்கான இன்வாய்ஸைக் கண்டுபிடி.");
   });
 });
+
+describe("OllamaService.detectChatIntent", () => {
+  beforeEach(() => {
+    vi.mocked(axios.post).mockReset();
+  });
+
+  it("parses AGGREGATION with vendor and a full date range", async () => {
+    vi.mocked(axios.post).mockResolvedValue({
+      data: { message: { content: 'ANSWER: AGGREGATION vendor="Readylink" from=2026-01-01 to=2026-12-31' } },
+    });
+
+    const service = new OllamaService();
+    const outcome = await service.detectChatIntent("How much have I paid Readylink this year?");
+
+    expect(outcome.success).toBe(true);
+    expect(outcome.data).toEqual({
+      type: "AGGREGATION",
+      vendor: "Readylink",
+      from: "2026-01-01",
+      to: "2026-12-31",
+    });
+  });
+
+  it("parses AGGREGATION with a vendor but no date range", async () => {
+    vi.mocked(axios.post).mockResolvedValue({
+      data: { message: { content: 'ANSWER: AGGREGATION vendor="SuperStore"' } },
+    });
+
+    const service = new OllamaService();
+    const outcome = await service.detectChatIntent("What's my total spend with SuperStore?");
+
+    expect(outcome.success).toBe(true);
+    expect(outcome.data).toEqual({ type: "AGGREGATION", vendor: "SuperStore" });
+  });
+
+  it("parses RETRIEVAL", async () => {
+    vi.mocked(axios.post).mockResolvedValue({
+      data: { message: { content: "ANSWER: RETRIEVAL" } },
+    });
+
+    const service = new OllamaService();
+    const outcome = await service.detectChatIntent("Which invoices mention GST?");
+
+    expect(outcome.success).toBe(true);
+    expect(outcome.data).toEqual({ type: "RETRIEVAL" });
+  });
+
+  it("returns a failure outcome when no ANSWER line is present", async () => {
+    vi.mocked(axios.post).mockResolvedValue({
+      data: { message: { content: "I'm not sure how to classify this." } },
+    });
+
+    const service = new OllamaService();
+    const outcome = await service.detectChatIntent("Some ambiguous question");
+
+    expect(outcome.success).toBe(false);
+    expect(outcome.data).toBeNull();
+  });
+
+  it("takes the last ANSWER line if the model adds preamble despite instructions", async () => {
+    vi.mocked(axios.post).mockResolvedValue({
+      data: {
+        message: {
+          content:
+            "Let me think about this ANSWER: RETRIEVAL for a second...\n\nANSWER: AGGREGATION vendor=\"Readylink\"",
+        },
+      },
+    });
+
+    const service = new OllamaService();
+    const outcome = await service.detectChatIntent("How much have I paid Readylink?");
+
+    expect(outcome.data).toEqual({ type: "AGGREGATION", vendor: "Readylink" });
+  });
+});

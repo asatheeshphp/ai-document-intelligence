@@ -571,6 +571,66 @@ export class ProcessingRepository extends BaseRepository<unknown> {
     });
   }
 
+  /**
+   * Real aggregation (SUM + COUNT), not a scored/ranked retrieval like SearchService --
+   * for "how much have I paid vendor X" questions, which need an exact number, not a
+   * semantically-ranked list of chunks. vendorNamePattern is matched the same
+   * case-insensitive partial way SearchService's existing vendorName filter already
+   * works, so "Readylink" matches "Readylink Internet Services Limited" without needing
+   * the full legal name. Returns null when nothing matches (distinct from a genuine
+   * zero-total match) so the caller can say "no invoices found" rather than "you spent
+   * $0". vendorNames returns every distinct matched name rather than silently picking
+   * one, in case a loose pattern matched more than one real vendor -- and currencies
+   * reports every distinct one seen, so the caller can flag a mismatch instead of
+   * silently summing incompatible units together.
+   */
+  async getVendorSpendSummary(filter: {
+    vendorNamePattern: string;
+    dateFrom?: Date;
+    dateTo?: Date;
+  }): Promise<{
+    vendorNames: string[];
+    invoiceCount: number;
+    totalAmount: number;
+    currencies: string[];
+  } | null> {
+    return this.withConnection(async () => {
+      const match: Record<string, unknown> = {
+        vendorName: { $regex: filter.vendorNamePattern, $options: "i" },
+      };
+
+      if (filter.dateFrom || filter.dateTo) {
+        const range: Record<string, Date> = {};
+        if (filter.dateFrom) range.$gte = filter.dateFrom;
+        if (filter.dateTo) range.$lte = filter.dateTo;
+        match.invoiceDate = range;
+      }
+
+      const results = await Invoice.aggregate([
+        { $match: match },
+        {
+          $group: {
+            _id: null,
+            invoiceCount: { $sum: 1 },
+            totalAmount: { $sum: { $ifNull: ["$totalAmount", 0] } },
+            vendorNames: { $addToSet: "$vendorName" },
+            currencies: { $addToSet: "$currency" },
+          },
+        },
+      ]).exec();
+
+      if (results.length === 0) return null;
+
+      const [result] = results;
+      return {
+        vendorNames: (result.vendorNames ?? []).filter(Boolean),
+        invoiceCount: result.invoiceCount,
+        totalAmount: result.totalAmount,
+        currencies: (result.currencies ?? []).filter(Boolean),
+      };
+    });
+  }
+
   async listEmbeddings(filter: Record<string, unknown> = {}): Promise<IEmbedding[]> {
     return this.withConnection(async () => {
       return Embedding.find(filter).sort({ createdAt: -1 }).exec();

@@ -13,9 +13,9 @@ export async function POST(request: Request) {
     const history = Array.isArray(body?.history) ? (body.history as RagChatTurn[]) : undefined;
 
     const ragService = new RagService();
-    const { answer, sources } = await ragService.answer({ question, history });
+    const { answer, sources, mode } = await ragService.answer({ question, history });
 
-    return NextResponse.json({ success: true, question, answer, sources });
+    return NextResponse.json({ success: true, question, answer, sources, mode });
   } catch (error) {
     return NextResponse.json(
       {
