@@ -299,18 +299,61 @@ export class RagService {
   }
 
   /**
-   * Verifies an answer that names exactly one invoice two ways -- a multi-invoice
-   * list-style answer (e.g. "3 invoices mention GST") is structurally different and
-   * neither check cleanly applies to it, so both are skipped whenever the answer names
-   * zero or more than one invoice.
+   * Identifies which single invoice, among the distinct invoices in the retrieved
+   * results, is a UNIQUE match for every significant number the answer stated.
    *
-   * 1. Premise: does the named invoice's own text have anything to do with what was
-   *    asked? Confirmed live: "how much paid for internet 2026?" got a confident answer
-   *    naming an unrelated logistics invoice, stating that invoice's own real total --
-   *    the number check below would have passed it, since the number itself wasn't
-   *    misattributed. "internet" simply never appears anywhere in that invoice's text.
-   *    Skipped for non-English questions -- E5 retrieval can correctly match a genuine
-   *    non-English query to an invoice with zero literal overlap (see
+   * Confirmed live: "summarize the total computer invoice related amount" answered
+   * "$4,069.53 + $78.66 = $4,148.20" without ever naming "SuperStore" or "27639" in the
+   * text -- mentionsInvoice-based attribution alone found zero named invoices and
+   * silently skipped verification entirely, even though the sources conclusively show
+   * only invoice 27639 was actually used. This is the fallback for exactly that case:
+   * when the answer doesn't literally cite an identifier, infer which invoice it's
+   * really about from where its own stated numbers actually live. Only trusted when
+   * the match is unique -- if the numbers coincidentally fit more than one invoice (or
+   * fit none, e.g. a genuinely fabricated figure with no textual attribution to fall
+   * back on either), there's nothing safe to narrow to, so it's left unattributed
+   * rather than guessing.
+   */
+  private async attributeInvoiceByNumbers(
+    answerNumbers: number[],
+    distinctInvoices: SearchResultItem[]
+  ): Promise<{ invoice: SearchResultItem; fullText: string } | null> {
+    const matches: Array<{ invoice: SearchResultItem; fullText: string }> = [];
+
+    for (const invoiceResult of distinctInvoices) {
+      const chunks = await this.repository.findChunksByInvoiceId(invoiceResult.invoiceId);
+      const fullText = chunks.map((chunk) => chunk.text).join("\n");
+      const contextNumbers = new Set(extractSignificantNumbers(fullText));
+
+      if (answerNumbers.every((number) => contextNumbers.has(number))) {
+        matches.push({ invoice: invoiceResult, fullText });
+      }
+    }
+
+    return matches.length === 1 ? matches[0] : null;
+  }
+
+  /**
+   * Verifies an answer that's attributable to exactly one invoice two ways -- a
+   * multi-invoice list-style answer (e.g. "3 invoices mention GST") is structurally
+   * different and neither check cleanly applies to it, so both are skipped whenever the
+   * answer can't be narrowed to a single invoice.
+   *
+   * Attribution tries two ways, in order: first by whether the answer text literally
+   * names the invoice (vendor/invoice number substring) -- if that finds zero matches
+   * (the answer describes the invoice vaguely, e.g. "the computer invoices", rather
+   * than citing it), fall back to identifying it by which invoice's own text contains
+   * every significant number the answer states (see attributeInvoiceByNumbers). If the
+   * answer names 2+ invoices by text, that's left alone either way -- a genuine
+   * multi-invoice answer, not something either check should second-guess.
+   *
+   * 1. Premise: does the attributed invoice's own text have anything to do with what
+   *    was asked? Confirmed live: "how much paid for internet 2026?" got a confident
+   *    answer naming an unrelated logistics invoice, stating that invoice's own real
+   *    total -- the number check below would have passed it, since the number itself
+   *    wasn't misattributed. "internet" simply never appears anywhere in that invoice's
+   *    text. Skipped for non-English questions -- E5 retrieval can correctly match a
+   *    genuine non-English query to an invoice with zero literal overlap (see
    *    search.service.ts's translation-fallback note), so rejecting on overlap here
    *    would throw away exactly the recall that exists to protect.
    * 2. Numeric: does any significant monetary figure the model stated actually appear in
@@ -328,18 +371,26 @@ export class RagService {
     results: SearchResultItem[]
   ): Promise<"premise" | "numeric" | null> {
     const distinctInvoices = getDistinctInvoices(results);
-    const namedInvoices = distinctInvoices.filter((result) => mentionsInvoice(answer, result));
+    const namedByText = distinctInvoices.filter((result) => mentionsInvoice(answer, result));
+    const answerNumbers = extractSignificantNumbers(answer);
 
-    if (namedInvoices.length !== 1) return null;
+    let attributed: { invoice: SearchResultItem; fullText: string } | null = null;
 
-    const chunks = await this.repository.findChunksByInvoiceId(namedInvoices[0].invoiceId);
-    const fullText = chunks.map((chunk) => chunk.text).join("\n");
+    if (namedByText.length === 1) {
+      const chunks = await this.repository.findChunksByInvoiceId(namedByText[0].invoiceId);
+      attributed = { invoice: namedByText[0], fullText: chunks.map((chunk) => chunk.text).join("\n") };
+    } else if (namedByText.length === 0 && answerNumbers.length > 0) {
+      attributed = await this.attributeInvoiceByNumbers(answerNumbers, distinctInvoices);
+    }
+
+    if (!attributed) return null;
+
+    const { fullText } = attributed;
 
     if (PLAIN_ASCII_PATTERN.test(question) && hasMeaningfulTokens(question)) {
       if (!questionSharesVocabularyWith(question, fullText)) return "premise";
     }
 
-    const answerNumbers = extractSignificantNumbers(answer);
     if (answerNumbers.length === 0) return null;
 
     const contextNumbers = new Set(extractSignificantNumbers(fullText));

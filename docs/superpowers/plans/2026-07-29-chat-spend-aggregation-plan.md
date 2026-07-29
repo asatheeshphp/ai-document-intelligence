@@ -373,6 +373,56 @@ prompt only).
       test-data cleanup), and "What is the grand total on invoice 27639?" -- all
       unchanged and correct.
 
+### Task 12: Attribute an answer to its invoice by stated numbers when the answer never names it — found via systematic debugging after Task 8/9
+
+**Files:** `services/rag.service.ts`, `services/rag.service.test.ts`
+
+- [x] "summarize the total computer invoice related amount" answered "$4,069.53 + $78.66
+      = $4,148.20" (invoice 27639's own real numbers) without ever writing "SuperStore"
+      or "27639" in the text. Root cause traced precisely (not assumed): replayed the
+      exact answer through the real `RagService.answer()` and confirmed the fallback
+      never triggered, then confirmed why -- `mentionsInvoice`-based attribution alone
+      requires the answer to literally contain the vendor name or invoice number; a
+      vaguely-worded answer finds zero named invoices, and per the existing design
+      ("skipped for 0 or 2+ named invoices, to avoid false positives on multi-invoice
+      list answers") a count of 0 was silently treated as nothing-to-verify, even though
+      the sources conclusively show only one invoice was actually used.
+- [x] Fix: `attributeInvoiceByNumbers` -- when text-based naming finds zero matches but
+      the answer states significant numbers, identify the invoice by which one's own
+      full text contains every one of those numbers. Only trusted when the match is
+      unique; ambiguous (numbers fit 2+ invoices) or unattributable (numbers fit none)
+      cases are left unattributed rather than guessing, matching the same
+      asymmetric-risk philosophy as the existing 2+-named-invoices skip.
+- [x] Explicit, documented limitation (not silently missed): "computer" genuinely is a
+      real, literal word in invoice 27639's own text (`"Chromcraft Computer Table"` --
+      a computer desk, not a computer) -- closing the coverage gap doesn't fix this
+      specific example, since the premise check correctly finds the word lexically
+      present. Distinguishing "word is present" from "topically relevant" needs real
+      semantic understanding, which this check deliberately doesn't attempt. A
+      dedicated test asserts this remains unchanged, so the limitation is an
+      intentional, visible trade-off rather than a silent gap.
+- [x] 4 new unit tests: the coverage gap closing for a genuine premise mismatch, the
+      documented remaining literal-match limitation, ambiguous-attribution skip (numbers
+      fit 2+ invoices), and unattributable skip (numbers fit none). 21/21 passing.
+- [x] `npx tsc --noEmit` clean; `npm test` at 144/145 (same pre-existing, unrelated
+      missing-sample-PDF failure noted in Task 5).
+- [x] Live-verified against the real dev server: the exact reported "computer" example
+      behaves exactly as the documented limitation predicts (unchanged). A synthetic
+      case surfaced a SEPARATE, additional gap during this verification -- flagged to
+      the user, not silently folded into this fix -- see the note below.
+- [ ] **Flagged, not yet built**: near-universal invoice-vocabulary words ("amount",
+      "total") can still cause a false premise-pass even on a real, literal word match
+      -- e.g. "summarize the electricity bill amount" named ABC Technologies' invoice and
+      cited its real Installation Service line ($5,000), passing the premise check only
+      because "amount" is a genuine word in that invoice's line items -- "electricity"
+      itself never appears anywhere. Confirmed directly (regex check against the real
+      invoice text). Same root shape as the already-fixed "all" ⊂ "allowance" bug, but
+      this time it's a whole-word match on an extremely common, non-distinguishing
+      invoice-domain word, not a substring collision -- likely fix is excluding words
+      like "amount"/"total" from the premise check's vocabulary the same way
+      "invoice"/"invoices" and bare years already are. Awaiting a decision on scope
+      before building.
+
 ---
 
 ## Out of scope for this plan (explicit)

@@ -453,6 +453,158 @@ describe("RagService.answer — grounding verification", () => {
     // 1767 does appear in the invoice's own chunk, so the answer passes through.
     expect(result.answer).toBe("Readylink Internet Services Limited-க்கான தொகை 1767 ரூபாய்.");
   });
+
+  it("closes the coverage gap: attributes an answer to its invoice by stated numbers when the answer never names it, and catches a genuine premise mismatch", async () => {
+    // Reproduces the confirmed live bug: "summarize the total computer invoice related
+    // amount" answered with a real invoice's own numbers ($4,069.53 + $78.66 =
+    // $4,148.20) without ever writing "SuperStore" or "27639" in the text --
+    // mentionsInvoice-based attribution alone found zero named invoices and silently
+    // skipped verification, even though the sources conclusively show only one invoice
+    // was used. This uses a vocabulary word ("software") that genuinely isn't anywhere
+    // in the invoice's own text, to prove the coverage gap itself is closed --
+    // separately from the deeper "coincidental literal word match" limitation covered
+    // by the next test.
+    const searchResults = [
+      fakeSearchResult({
+        invoiceId: "inv-1",
+        invoice: { invoiceNumber: "27639", vendorName: "SuperStore" },
+        chunkText: "Subtotal: 4069.53",
+      }),
+    ];
+    const searchService = { search: vi.fn().mockResolvedValue({ results: searchResults }) } as unknown as SearchService;
+    const ollamaService = {
+      chatCompletion: vi
+        .fn()
+        .mockResolvedValue("The total amount for the software invoices is $4,069.53 + $78.66 = $4,148.20."),
+    } as unknown as OllamaService;
+    const spendQueryService = { getVendorSpendSummary: vi.fn() } as unknown as SpendQueryService;
+    const chatIntentService = fakeChatIntentService({ type: "RETRIEVAL" });
+    const repository = fakeRepository({
+      findChunksByInvoiceId: vi.fn().mockResolvedValue([
+        { chunkType: "header", text: "Supplier: SuperStore" },
+        {
+          chunkType: "line_items",
+          text: "Chromcraft Table, with Bottom Storage, qty 3 price 4069.53",
+        },
+        {
+          chunkType: "payment",
+          text: "Subtotal: 4069.53\nShipping Charge: 78.66\nGrand Total: 4148.2",
+          _id: { toString: () => "chunk-payment" },
+        },
+      ]),
+    });
+
+    const service = new RagService(searchService, ollamaService, spendQueryService, chatIntentService, repository);
+    const result = await service.answer({ question: "summarize the software invoice cost" });
+
+    expect(result.answer).toMatch(/doesn't appear to mention what you asked about/);
+  });
+
+  it("documents the remaining known limitation: a coincidental literal word match is not caught even with attribution", async () => {
+    // Same live bug as above, but with the invoice's real product name intact
+    // ("Chromcraft Computer Table"). "computer" genuinely occurs there as a real word --
+    // it's a computer DESK, not a computer -- so the word-boundary premise check
+    // correctly finds it present and passes the answer through. Distinguishing "word is
+    // lexically present" from "topically relevant" needs real semantic understanding,
+    // which this check deliberately doesn't attempt (see rag.service.ts's own comment on
+    // attributeInvoiceByNumbers). This test exists so the limitation stays a documented,
+    // intentional trade-off rather than a silent gap.
+    const searchResults = [
+      fakeSearchResult({
+        invoiceId: "inv-1",
+        invoice: { invoiceNumber: "27639", vendorName: "SuperStore" },
+        chunkText: "Subtotal: 4069.53",
+      }),
+    ];
+    const searchService = { search: vi.fn().mockResolvedValue({ results: searchResults }) } as unknown as SearchService;
+    const answerText = "The total amount for the computer invoices is $4,069.53 + $78.66 = $4,148.20.";
+    const ollamaService = { chatCompletion: vi.fn().mockResolvedValue(answerText) } as unknown as OllamaService;
+    const spendQueryService = { getVendorSpendSummary: vi.fn() } as unknown as SpendQueryService;
+    const chatIntentService = fakeChatIntentService({ type: "RETRIEVAL" });
+    const repository = fakeRepository({
+      findChunksByInvoiceId: vi.fn().mockResolvedValue([
+        { chunkType: "header", text: "Supplier: SuperStore" },
+        {
+          chunkType: "line_items",
+          text: "Chromcraft Computer Table, with Bottom Storage, qty 3 amount 4069.53",
+        },
+        {
+          chunkType: "payment",
+          text: "Subtotal: 4069.53\nShipping Charge: 78.66\nGrand Total: 4148.2",
+          _id: { toString: () => "chunk-payment" },
+        },
+      ]),
+    });
+
+    const service = new RagService(searchService, ollamaService, spendQueryService, chatIntentService, repository);
+    const result = await service.answer({ question: "summarize the total computer invoice related amount" });
+
+    expect(result.answer).toBe(answerText);
+  });
+
+  it("does not attribute when the answer's numbers coincidentally fit more than one invoice", async () => {
+    const searchResults = [
+      fakeSearchResult({
+        invoiceId: "inv-1",
+        invoice: { invoiceNumber: "INV-1", vendorName: "Vendor One" },
+        chunkText: "Subtotal: 100",
+      }),
+      fakeSearchResult({
+        invoiceId: "inv-2",
+        invoice: { invoiceNumber: "INV-2", vendorName: "Vendor Two" },
+        chunkText: "Subtotal: 100",
+      }),
+    ];
+    const searchService = { search: vi.fn().mockResolvedValue({ results: searchResults }) } as unknown as SearchService;
+    const ollamaService = {
+      chatCompletion: vi.fn().mockResolvedValue("The total is 100."),
+    } as unknown as OllamaService;
+    const spendQueryService = { getVendorSpendSummary: vi.fn() } as unknown as SpendQueryService;
+    const chatIntentService = fakeChatIntentService({ type: "RETRIEVAL" });
+    // Both invoices' own chunks happen to contain "100" -- an ambiguous match, so
+    // neither should be trusted as "the" invoice this answer is about.
+    const repository = fakeRepository({
+      findChunksByInvoiceId: vi.fn().mockResolvedValue([
+        { chunkType: "payment", text: "Grand Total: 100", _id: { toString: () => "chunk-payment" } },
+      ]),
+    });
+
+    const service = new RagService(searchService, ollamaService, spendQueryService, chatIntentService, repository);
+    const result = await service.answer({ question: "what's the total?" });
+
+    expect(result.answer).toBe("The total is 100.");
+  });
+
+  it("does not attribute when the answer's numbers match no invoice at all", async () => {
+    const searchResults = [
+      fakeSearchResult({
+        invoiceId: "inv-1",
+        invoice: { invoiceNumber: "INV-1", vendorName: "Vendor Co" },
+        chunkText: "Subtotal: 100",
+      }),
+    ];
+    const searchService = { search: vi.fn().mockResolvedValue({ results: searchResults }) } as unknown as SearchService;
+    const ollamaService = {
+      chatCompletion: vi.fn().mockResolvedValue("The total is 999999."),
+    } as unknown as OllamaService;
+    const spendQueryService = { getVendorSpendSummary: vi.fn() } as unknown as SpendQueryService;
+    const chatIntentService = fakeChatIntentService({ type: "RETRIEVAL" });
+    const repository = fakeRepository({
+      findChunksByInvoiceId: vi.fn().mockResolvedValue([
+        { chunkType: "payment", text: "Grand Total: 100", _id: { toString: () => "chunk-payment" } },
+      ]),
+    });
+
+    const service = new RagService(searchService, ollamaService, spendQueryService, chatIntentService, repository);
+    const result = await service.answer({ question: "what's the total?" });
+
+    // Documented limitation: with no textual name AND no invoice whose own numbers
+    // match, there's nothing to attribute to, so a fully fabricated figure with no
+    // vendor/invoice-number attribution to fall back on isn't caught either. Not
+    // currently the model's observed failure mode (see attributeInvoiceByNumbers'
+    // comment) -- misattribution of a REAL number has been, which this fix does catch.
+    expect(result.answer).toBe("The total is 999999.");
+  });
 });
 
 describe("RagService.answer — status-filter path", () => {
