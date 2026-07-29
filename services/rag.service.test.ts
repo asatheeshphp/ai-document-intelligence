@@ -272,6 +272,7 @@ describe("RagService.answer — grounding verification", () => {
     const chatIntentService = fakeChatIntentService({ type: "RETRIEVAL" });
     const repository = fakeRepository({
       findChunksByInvoiceId: vi.fn().mockResolvedValue([
+        { chunkType: "header", text: "Supplier: Vendor Co" },
         { chunkType: "payment", text: "Grand Total: 500.00", _id: { toString: () => "chunk-payment" } },
       ]),
     });
@@ -312,5 +313,99 @@ describe("RagService.answer — grounding verification", () => {
     // invoices, the single-invoice grounding check doesn't apply and the answer passes
     // through unmodified.
     expect(result.answer).toContain("9999.99");
+  });
+
+  it("replaces an answer with a safe fallback when the named invoice's own content has nothing to do with the question", async () => {
+    // Reproduces the confirmed live bug: "how much paid for internet 2026?" got a
+    // confident answer naming a real, unrelated logistics invoice, stating that
+    // invoice's own genuine total -- the numeric check alone would have passed this,
+    // since the number wasn't misattributed. The premise itself ("this invoice is about
+    // internet") is what's wrong, and "internet" never appears anywhere in the invoice.
+    const searchResults = [
+      fakeSearchResult({
+        invoiceId: "inv-1",
+        invoice: { invoiceNumber: "EXL-2026-2048", vendorName: "Express Cargo & Logistics Solutions" },
+        chunkText: "Supplier: Express Cargo & Logistics Solutions",
+      }),
+    ];
+    const searchService = { search: vi.fn().mockResolvedValue({ results: searchResults }) } as unknown as SearchService;
+    const ollamaService = {
+      chatCompletion: vi
+        .fn()
+        .mockResolvedValue("The total amount paid for internet in 2026 was Express Cargo & Logistics Solutions' 45810."),
+    } as unknown as OllamaService;
+    const spendQueryService = { getVendorSpendSummary: vi.fn() } as unknown as SpendQueryService;
+    const chatIntentService = fakeChatIntentService({ type: "RETRIEVAL" });
+    const repository = fakeRepository({
+      findChunksByInvoiceId: vi.fn().mockResolvedValue([
+        { chunkType: "header", text: "Supplier: Express Cargo & Logistics Solutions" },
+        { chunkType: "payment", text: "Grand Total: 45810", _id: { toString: () => "chunk-payment" } },
+      ]),
+    });
+
+    const service = new RagService(searchService, ollamaService, spendQueryService, chatIntentService, repository);
+    const result = await service.answer({ question: "how much paid for internet 2026?" });
+
+    expect(result.answer).not.toContain("45810");
+    expect(result.answer).toMatch(/doesn't appear to mention what you asked about/);
+  });
+
+  it("keeps the answer when the question's key terms do appear in the named invoice's own content", async () => {
+    const searchResults = [
+      fakeSearchResult({
+        invoiceId: "inv-1",
+        invoice: { invoiceNumber: "EXL-2026-2048", vendorName: "Express Cargo & Logistics Solutions" },
+        chunkText: "Supplier: Express Cargo & Logistics Solutions",
+      }),
+    ];
+    const searchService = { search: vi.fn().mockResolvedValue({ results: searchResults }) } as unknown as SearchService;
+    const ollamaService = {
+      chatCompletion: vi.fn().mockResolvedValue("Express Cargo & Logistics Solutions' grand total is 45810."),
+    } as unknown as OllamaService;
+    const spendQueryService = { getVendorSpendSummary: vi.fn() } as unknown as SpendQueryService;
+    const chatIntentService = fakeChatIntentService({ type: "RETRIEVAL" });
+    const repository = fakeRepository({
+      findChunksByInvoiceId: vi.fn().mockResolvedValue([
+        { chunkType: "header", text: "Supplier: Express Cargo & Logistics Solutions" },
+        { chunkType: "payment", text: "Grand Total: 45810", _id: { toString: () => "chunk-payment" } },
+      ]),
+    });
+
+    const service = new RagService(searchService, ollamaService, spendQueryService, chatIntentService, repository);
+    const result = await service.answer({ question: "What is the grand total for Express Cargo?" });
+
+    expect(result.answer).toBe("Express Cargo & Logistics Solutions' grand total is 45810.");
+  });
+
+  it("skips the premise check for a non-English question even with zero literal word overlap", async () => {
+    // Guards multilingual recall: SearchService's own translation-fallback note
+    // documents that a genuine non-English query can correctly match an invoice it
+    // shares no literal words with. Rejecting on overlap here would defeat that.
+    const searchResults = [
+      fakeSearchResult({
+        invoiceId: "inv-1",
+        invoice: { invoiceNumber: "INV-1", vendorName: "Readylink Internet Services Limited" },
+        chunkText: "Supplier: Readylink Internet Services Limited",
+      }),
+    ];
+    const searchService = { search: vi.fn().mockResolvedValue({ results: searchResults }) } as unknown as SearchService;
+    const ollamaService = {
+      chatCompletion: vi.fn().mockResolvedValue("Readylink Internet Services Limited-க்கான தொகை 1767 ரூபாய்."),
+    } as unknown as OllamaService;
+    const spendQueryService = { getVendorSpendSummary: vi.fn() } as unknown as SpendQueryService;
+    const chatIntentService = fakeChatIntentService({ type: "RETRIEVAL" });
+    const repository = fakeRepository({
+      findChunksByInvoiceId: vi.fn().mockResolvedValue([
+        { chunkType: "payment", text: "Grand Total: 1767.00", _id: { toString: () => "chunk-payment" } },
+      ]),
+    });
+
+    const service = new RagService(searchService, ollamaService, spendQueryService, chatIntentService, repository);
+    const result = await service.answer({ question: "நான் Readylink க்கு எவ்வளவு பணம் செலுத்தியுள்ளேன்?" });
+
+    // The Tamil question shares no literal tokens with the invoice text, but since it's
+    // non-ASCII the premise check is skipped -- only the numeric check applies, and
+    // 1767 does appear in the invoice's own chunk, so the answer passes through.
+    expect(result.answer).toBe("Readylink Internet Services Limited-க்கான தொகை 1767 ரூபாய்.");
   });
 });

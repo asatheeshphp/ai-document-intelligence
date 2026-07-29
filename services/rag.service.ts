@@ -3,6 +3,7 @@ import { OllamaService } from "@/services/ollama.service";
 import { SpendQueryService, type VendorSpendSummary } from "@/services/spend-query.service";
 import { ChatIntentService } from "@/services/chat-intent.service";
 import { ProcessingRepository } from "@/repositories/processing.repository";
+import { lexicalOverlapScore, hasMeaningfulTokens } from "@/utils/lexical-score";
 import type { SearchResultItem } from "@/services/search.service";
 import type { ChatIntent } from "@/schemas/chat-intent.schema";
 
@@ -26,10 +27,27 @@ const NO_CONTEXT_ANSWER =
 const UNGROUNDED_ANSWER_FALLBACK =
   "I found a related invoice, but couldn't confirm an exact figure from the retrieved content — the number I would have used didn't match that invoice's own data. Try asking about a specific invoice number for a more precise answer.";
 
+// Confirmed live: asking "how much paid for internet 2026?" got a confident answer
+// naming an unrelated logistics invoice as "the relevant invoice", with a dollar figure
+// that genuinely was that invoice's own total -- so UNGROUNDED_ANSWER_FALLBACK's numeric
+// check passed it. The real problem was the premise, not the number: "internet" never
+// appears anywhere in that invoice's own text. This is a distinct failure mode (the
+// model picking the closest-scoring but topically-unrelated retrieval result and
+// asserting it's the answer) from a misattributed number, so it gets its own message.
+const PREMISE_MISMATCH_FALLBACK =
+  "I found an invoice that scored as a partial match, but its own content doesn't appear to mention what you asked about. Try rephrasing with an exact vendor name or invoice number.";
+
 // Skip line-item quantities, tax percentages, and other small incidental numbers --
 // only figures this size or larger are meaningful enough to be worth verifying as a
 // possible hallucinated/misattributed total.
 const MIN_SIGNIFICANT_NUMBER = 10;
+
+// Non-English questions are deliberately exempted from the premise check below: E5
+// retrieval for a genuine non-English query with no literal anchor can correctly match
+// an invoice with zero literal word overlap (see search.service.ts's own calibration
+// note on why it retries via translation) -- rejecting on overlap here would throw away
+// exactly the recall that fallback exists to protect.
+const PLAIN_ASCII_PATTERN = /^[\x00-\x7F]*$/;
 
 function extractSignificantNumbers(text: string): number[] {
   const matches = text.match(/\d[\d,]*\.?\d*/g) ?? [];
@@ -181,9 +199,10 @@ export class RagService {
     const prompt = buildGroundedPrompt(input.question, history, augmentedResults);
     const answer = await this.ollamaService.chatCompletion(prompt);
 
-    const grounded = await this.isAnswerGrounded(answer, augmentedResults);
-    if (!grounded) {
-      return { answer: UNGROUNDED_ANSWER_FALLBACK, sources: augmentedResults, mode: "retrieved" };
+    const groundingFailure = await this.checkAnswerGrounding(input.question, answer, augmentedResults);
+    if (groundingFailure) {
+      const fallback = groundingFailure === "premise" ? PREMISE_MISMATCH_FALLBACK : UNGROUNDED_ANSWER_FALLBACK;
+      return { answer: fallback, sources: augmentedResults, mode: "retrieved" };
     }
 
     return { answer, sources: augmentedResults, mode: "retrieved" };
@@ -222,28 +241,52 @@ export class RagService {
   }
 
   /**
-   * Verifies that any significant monetary figure the model stated actually appears in
-   * the SPECIFIC invoice's own chunk text it's discussing -- not just somewhere among
-   * all retrieved chunks, which could span several unrelated invoices. Confirmed live:
-   * a naive "does this number appear anywhere in context" check would have passed a
-   * hallucinated answer, since the borrowed number was real, just from a different
-   * invoice. Only enforced when the answer clearly names exactly one invoice -- a
-   * multi-invoice list-style answer (e.g. "3 invoices mention GST") is structurally
-   * different and this single-invoice check doesn't cleanly apply to it.
+   * Verifies an answer that names exactly one invoice two ways -- a multi-invoice
+   * list-style answer (e.g. "3 invoices mention GST") is structurally different and
+   * neither check cleanly applies to it, so both are skipped whenever the answer names
+   * zero or more than one invoice.
+   *
+   * 1. Premise: does the named invoice's own text have anything to do with what was
+   *    asked? Confirmed live: "how much paid for internet 2026?" got a confident answer
+   *    naming an unrelated logistics invoice, stating that invoice's own real total --
+   *    the number check below would have passed it, since the number itself wasn't
+   *    misattributed. "internet" simply never appears anywhere in that invoice's text.
+   *    Skipped for non-English questions -- E5 retrieval can correctly match a genuine
+   *    non-English query to an invoice with zero literal overlap (see
+   *    search.service.ts's translation-fallback note), so rejecting on overlap here
+   *    would throw away exactly the recall that exists to protect.
+   * 2. Numeric: does any significant monetary figure the model stated actually appear in
+   *    the SPECIFIC invoice's own chunk text -- not just somewhere among all retrieved
+   *    chunks, which could span several unrelated invoices. Confirmed live: a naive
+   *    "does this number appear anywhere in context" check would have passed a
+   *    hallucinated answer, since the borrowed number was real, just from a different
+   *    invoice.
+   *
+   * Returns which check failed (for fallback-message selection), or null if grounded.
    */
-  private async isAnswerGrounded(answer: string, results: SearchResultItem[]): Promise<boolean> {
+  private async checkAnswerGrounding(
+    question: string,
+    answer: string,
+    results: SearchResultItem[]
+  ): Promise<"premise" | "numeric" | null> {
     const distinctInvoices = getDistinctInvoices(results);
     const namedInvoices = distinctInvoices.filter((result) => mentionsInvoice(answer, result));
 
-    if (namedInvoices.length !== 1) return true;
-
-    const answerNumbers = extractSignificantNumbers(answer);
-    if (answerNumbers.length === 0) return true;
+    if (namedInvoices.length !== 1) return null;
 
     const chunks = await this.repository.findChunksByInvoiceId(namedInvoices[0].invoiceId);
     const fullText = chunks.map((chunk) => chunk.text).join("\n");
-    const contextNumbers = new Set(extractSignificantNumbers(fullText));
 
-    return answerNumbers.every((number) => contextNumbers.has(number));
+    if (PLAIN_ASCII_PATTERN.test(question) && hasMeaningfulTokens(question)) {
+      if (lexicalOverlapScore(question, fullText) === 0) return "premise";
+    }
+
+    const answerNumbers = extractSignificantNumbers(answer);
+    if (answerNumbers.length === 0) return null;
+
+    const contextNumbers = new Set(extractSignificantNumbers(fullText));
+    if (!answerNumbers.every((number) => contextNumbers.has(number))) return "numeric";
+
+    return null;
   }
 }

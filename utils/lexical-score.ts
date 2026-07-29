@@ -50,6 +50,14 @@ function tokenMatchesText(token: string, normalizedText: string): boolean {
  * outranks a semantically-similar-but-wrong chunk purely on cosine similarity — that's
  * a keyword-match problem, not a semantic one. Literal overlap covers exactly that gap.
  */
+// Lets a caller distinguish "score is 0 because nothing meaningful was asked" from
+// "score is 0 because none of the meaningful words matched" -- the two need different
+// handling (see rag.service.ts's premise-grounding check, which only rejects on the
+// latter).
+export function hasMeaningfulTokens(query: string): boolean {
+  return tokenize(query).length > 0;
+}
+
 export function lexicalOverlapScore(query: string, text: string): number {
   const normalizedQuery = query.trim().toLowerCase();
   const normalizedText = text.toLowerCase();

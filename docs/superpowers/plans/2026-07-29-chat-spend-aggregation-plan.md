@@ -203,6 +203,49 @@ prompt only).
       for logistics?" correctly returns the exact Express Cargo total (45810) via the
       aggregation path.
 
+### Task 8: Fix topical/premise hallucination — found via live re-testing after Task 7's numeric-grounding fix
+
+**Files:** `services/rag.service.ts`, `services/rag.service.test.ts`, `utils/lexical-score.ts`
+
+- [x] Task 7's numeric-grounding check didn't fully close the gap: re-testing "how much
+      paid for internet 2026?" after that fix still returned a confident, wrong answer
+      -- naming Express Cargo (an unrelated logistics invoice) as "the relevant invoice"
+      and stating its real, genuine total. The number itself wasn't misattributed (it
+      really is that invoice's own total), so the numeric check passed it. The premise
+      was wrong: "internet" never appears anywhere in that invoice's own content at all.
+- [x] Fix: a premise-grounding check, folded into the same single-named-invoice
+      verification step as the numeric check (same trigger, same shared chunk fetch --
+      no extra DB round trip). Reuses `lexicalOverlapScore` from `utils/lexical-score.ts`
+      (already relied on by `SearchService`'s own lexical boost, so no new/untested
+      logic): if the question is plain ASCII and has at least one meaningful token, and
+      none of its meaningful words appear anywhere in the named invoice's full chunk
+      text, the answer is replaced with a distinct fallback message rather than trusting
+      the model's claim.
+- [x] Deliberately skipped for non-English questions -- `SearchService`'s own
+      translation-fallback note documents that a genuine non-English query can correctly
+      match an invoice with zero literal word overlap; applying this check there would
+      have broken the Tamil/Telugu recall already verified in Task 5.
+- [x] No changes to `SearchService` at all -- ranking, thresholds, `MAX_RESULTS_PER_INVOICE`,
+      and the multilingual translation fallback are untouched. This is purely an
+      additional post-answer verification layer in `RagService`, so no existing search
+      query's behavior changed.
+- [x] Added `hasMeaningfulTokens` export to `utils/lexical-score.ts` (distinguishes "no
+      meaningful words to check" from "words existed but didn't match" -- only the
+      latter should reject).
+- [x] 4 new unit tests: reproduces the exact reported bug (rejected), a genuinely-matching
+      English question (passes through), a non-ASCII question with zero overlap (passes
+      through, protecting multilingual recall), plus fixed an existing test whose mock
+      invoice chunk set was unrealistically thin (payment chunk only, no header/vendor
+      text) and would have false-failed the new check -- corrected to include a header
+      chunk, matching real `findChunksByInvoiceId` shape. 14/14 passing.
+- [x] `npx tsc --noEmit` clean; `npm test` at 126/127 (same pre-existing, unrelated
+      missing-sample-PDF failure noted in Task 5).
+- [x] Live-verified against the real dev server: "how much paid for internet 2026?" now
+      returns the safe premise-mismatch fallback instead of a wrong claim. Re-confirmed
+      "What is the grand total on invoice 27639?" still returns the exact correct figure
+      (4148.2), and "how much paid for logistics?" still returns a genuinely-grounded
+      figure from Express Cargo's own data.
+
 ---
 
 ## Out of scope for this plan (explicit)
