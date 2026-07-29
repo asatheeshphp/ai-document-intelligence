@@ -606,6 +606,83 @@ describe("RagService.answer — grounding verification", () => {
     expect(result.answer).toBe("The total is 999999.");
   });
 
+  it("rejects a fabricated invoice number even when its attached dollar figure is genuinely correct", async () => {
+    // Reproduces the confirmed live bug: "The total logistics amount for Invoice
+    // INV-2026-2048 is 45,810 rupees" spliced the letter prefix of one real invoice
+    // ("INV-2026-001") onto the numeric suffix of a different real invoice
+    // ("EXL-2026-2048") -- a fabricated identifier that matches nothing on file, even
+    // though 45,810 genuinely is the real Express Cargo invoice's total. Both the
+    // premise check ("logistics" is a real word in that invoice) and the numeric check
+    // (45810 is a real number there) would pass this -- it needs its own check.
+    const searchResults = [
+      fakeSearchResult({
+        invoiceId: "inv-1",
+        invoice: { invoiceNumber: "EXL-2026-2048", vendorName: "Express Cargo & Logistics Solutions" },
+        chunkText: "Supplier: Express Cargo & Logistics Solutions",
+      }),
+      fakeSearchResult({
+        invoiceId: "inv-2",
+        invoice: { invoiceNumber: "INV-2026-001", vendorName: "ABC Technologies Pvt. Ltd." },
+        chunkText: "Supplier: ABC Technologies Pvt. Ltd.",
+      }),
+    ];
+    const searchService = { search: vi.fn().mockResolvedValue({ results: searchResults }) } as unknown as SearchService;
+    const ollamaService = {
+      chatCompletion: vi
+        .fn()
+        .mockResolvedValue("The total logistics amount for Invoice INV-2026-2048 is 45,810 rupees."),
+    } as unknown as OllamaService;
+    const spendQueryService = { getVendorSpendSummary: vi.fn() } as unknown as SpendQueryService;
+    const chatIntentService = fakeChatIntentService({ type: "RETRIEVAL" });
+    const repository = fakeRepository({
+      findChunksByInvoiceId: vi.fn().mockResolvedValue([
+        { chunkType: "supplier", text: "Supplier: Express Cargo & Logistics Solutions" },
+        { chunkType: "payment", text: "Grand Total: 45810", _id: { toString: () => "chunk-payment" } },
+      ]),
+    });
+
+    const service = new RagService(searchService, ollamaService, spendQueryService, chatIntentService, repository);
+    const result = await service.answer({ question: "summarize the total logistics amount" });
+
+    expect(result.answer).toMatch(/doesn't match anything on file/);
+  });
+
+  it("does not flag a real invoice number, or a differently-shaped identifier like a PO number, as fabricated", async () => {
+    const searchResults = [
+      fakeSearchResult({
+        invoiceId: "inv-1",
+        invoice: { invoiceNumber: "EXL-2026-2048", vendorName: "Express Cargo & Logistics Solutions" },
+        chunkText: "Supplier: Express Cargo & Logistics Solutions",
+      }),
+    ];
+    const searchService = { search: vi.fn().mockResolvedValue({ results: searchResults }) } as unknown as SearchService;
+    const ollamaService = {
+      chatCompletion: vi
+        .fn()
+        .mockResolvedValue(
+          "Invoice EXL-2026-2048 (PO-45879) from Express Cargo & Logistics Solutions totals 45810."
+        ),
+    } as unknown as OllamaService;
+    const spendQueryService = { getVendorSpendSummary: vi.fn() } as unknown as SpendQueryService;
+    const chatIntentService = fakeChatIntentService({ type: "RETRIEVAL" });
+    const repository = fakeRepository({
+      findChunksByInvoiceId: vi.fn().mockResolvedValue([
+        { chunkType: "header", text: "Invoice Number: EXL-2026-2048\nPO Number: PO-45879" },
+        { chunkType: "supplier", text: "Supplier: Express Cargo & Logistics Solutions" },
+        { chunkType: "payment", text: "Grand Total: 45810", _id: { toString: () => "chunk-payment" } },
+      ]),
+    });
+
+    const service = new RagService(searchService, ollamaService, spendQueryService, chatIntentService, repository);
+    const result = await service.answer({
+      question: "What is the grand total and PO number for Express Cargo?",
+    });
+
+    expect(result.answer).toBe(
+      "Invoice EXL-2026-2048 (PO-45879) from Express Cargo & Logistics Solutions totals 45810."
+    );
+  });
+
   it("narrows a shared vendor name to the specific invoice instead of treating it as a multi-invoice answer", async () => {
     // Reproduces the confirmed live bug: "The total for the SuperStore computer
     // invoices is $1,330.29" matched BOTH of SuperStore's real invoices (24938 and

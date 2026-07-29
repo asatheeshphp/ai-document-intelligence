@@ -38,6 +38,27 @@ const UNGROUNDED_ANSWER_FALLBACK =
 const PREMISE_MISMATCH_FALLBACK =
   "I found an invoice that scored as a partial match, but its own content doesn't appear to mention what you asked about. Try rephrasing with an exact vendor name or invoice number.";
 
+// Confirmed live: "The total logistics amount for Invoice INV-2026-2048 is 45,810
+// rupees" spliced the letter-prefix of one real invoice ("INV-2026-001") onto the
+// numeric suffix of a different real invoice ("EXL-2026-2048") -- a fabricated
+// identifier that doesn't match anything on file, even though the dollar figure it
+// carried genuinely was correct. Premise/numeric checks alone can't catch this: the
+// number attributes cleanly to the right invoice, so both pass. This needs its own
+// check specifically for invented identifiers.
+const FABRICATED_IDENTIFIER_FALLBACK =
+  "I mentioned an invoice identifier that doesn't match anything on file, so I can't confirm this answer. Try asking again, or reference a specific real invoice number.";
+
+// Matches this corpus's real invoice-number shape (letters, a 2-4 digit segment, then
+// another digit segment, dash-separated -- e.g. "EXL-2026-2048", "INV-2026-001").
+// Deliberately narrow: broader alphanumeric-with-dashes patterns also cover PO numbers
+// ("PO-45879") and multi-segment order IDs ("IN-2012-BF1121558-40955"), which are real,
+// legitimate identifiers this check must not flag just for not being an invoice number.
+const INVOICE_NUMBER_SHAPE_PATTERN = /\b[a-z]{2,6}-\d{2,4}-\d{1,6}\b/gi;
+
+function extractInvoiceNumberShapedCandidates(text: string): string[] {
+  return [...text.matchAll(INVOICE_NUMBER_SHAPE_PATTERN)].map((match) => match[0]);
+}
+
 // Skip line-item quantities, tax percentages, and other small incidental numbers --
 // only figures this size or larger are meaningful enough to be worth verifying as a
 // possible hallucinated/misattributed total.
@@ -272,7 +293,12 @@ export class RagService {
 
     const groundingFailure = await this.checkAnswerGrounding(input.question, answer, augmentedResults);
     if (groundingFailure) {
-      const fallback = groundingFailure === "premise" ? PREMISE_MISMATCH_FALLBACK : UNGROUNDED_ANSWER_FALLBACK;
+      const fallback =
+        groundingFailure === "premise"
+          ? PREMISE_MISMATCH_FALLBACK
+          : groundingFailure === "identifier"
+            ? FABRICATED_IDENTIFIER_FALLBACK
+            : UNGROUNDED_ANSWER_FALLBACK;
       return { answer: fallback, sources: augmentedResults, mode: "retrieved" };
     }
 
@@ -386,14 +412,34 @@ export class RagService {
    *    hallucinated answer, since the borrowed number was real, just from a different
    *    invoice.
    *
+   * Runs one check first, unconditionally: does every invoice-number-SHAPED string in
+   * the answer match a real invoice number among the retrieved results? Confirmed live:
+   * "Invoice INV-2026-2048" spliced one real invoice's letter prefix onto a different
+   * real invoice's numeric suffix -- a fabricated identifier, even though the dollar
+   * figure attached to it was genuinely correct. This can't be caught by the
+   * attribution-based checks below (the number attributes cleanly), so it runs
+   * independently of whether the answer is otherwise single- or multi-invoice shaped.
+   *
    * Returns which check failed (for fallback-message selection), or null if grounded.
    */
   private async checkAnswerGrounding(
     question: string,
     answer: string,
     results: SearchResultItem[]
-  ): Promise<"premise" | "numeric" | null> {
+  ): Promise<"premise" | "numeric" | "identifier" | null> {
     const distinctInvoices = getDistinctInvoices(results);
+
+    const realInvoiceNumbers = new Set(
+      distinctInvoices
+        .map((invoice) => invoice.invoice?.invoiceNumber?.toLowerCase())
+        .filter((invoiceNumber): invoiceNumber is string => Boolean(invoiceNumber))
+    );
+    const candidateIdentifiers = extractInvoiceNumberShapedCandidates(answer);
+    const hasFabricatedIdentifier = candidateIdentifiers.some(
+      (candidate) => !realInvoiceNumbers.has(candidate.toLowerCase())
+    );
+    if (hasFabricatedIdentifier) return "identifier";
+
     const answerNumbers = extractSignificantNumbers(answer);
 
     const matches = distinctInvoices

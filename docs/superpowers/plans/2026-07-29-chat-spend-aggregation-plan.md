@@ -479,6 +479,46 @@ prompt only).
       already-documented literal-word-match limitation) and other regressions (invoice
       27639's total, the genuine 3-invoice GST list, unpaid-invoices list) unchanged.
 
+### Task 14: Reject a fabricated invoice-number-shaped identifier, even when its attached figure is genuinely correct
+
+**Files:** `services/rag.service.ts`, `services/rag.service.test.ts`
+
+- [x] "The total logistics amount for Invoice INV-2026-2048 is 45,810 rupees" spliced the
+      letter prefix of one real invoice ("INV-2026-001") onto the numeric suffix of a
+      different real invoice ("EXL-2026-2048") -- a fabricated identifier matching
+      nothing on file, even though 45,810 genuinely is the real Express Cargo invoice's
+      total. Neither the premise check ("logistics" is a real word there) nor the
+      numeric check (45810 is a real number there) could catch this -- the figure
+      attributes cleanly, so both pass. This is the 5th narrow gap found in this same
+      verification logic across Tasks 7/8/9/12/13; flagged to the user as a pattern
+      worth naming before building a 6th narrow patch, and explicitly chosen as still
+      the pragmatic move over a structural redesign at this scope.
+- [x] Fix: `checkAnswerGrounding` now runs an identifier-shape check FIRST, unconditional
+      on whether the answer is otherwise single- or multi-invoice shaped -- any
+      invoice-number-SHAPED substring in the answer (letters-digits-digits, dash
+      separated, matching this corpus's real invoice-number format) must equal a real
+      invoice number among the retrieved results, or the answer is rejected outright.
+      Deliberately narrow pattern (`extractInvoiceNumberShapedCandidates`) so it doesn't
+      false-flag other legitimate identifier shapes already in this corpus -- a PO
+      number ("PO-45879", single dash) or a multi-segment order ID
+      ("IN-2012-BF1121558-40955") don't match the letters-digits-digits shape and are
+      left alone.
+- [x] 2 new unit tests: the exact reported bug (fabricated identifier rejected despite a
+      correct dollar figure), and a true-negative case (a real invoice number plus a
+      real PO number in the same answer, confirming neither is falsely flagged).
+      25/25 passing.
+- [x] `npx tsc --noEmit` clean; `npm test` at 150/151 (same pre-existing, unrelated
+      missing-sample-PDF failure noted in Task 5).
+- [x] Live-verified against the real dev server: the exact reported question now
+      returns the new fabricated-identifier fallback. Re-confirmed invoice 27639's
+      total is unaffected. Live testing surfaced one more small, DIFFERENT issue --
+      noted, not fixed, since it's out of scope for this task: asked for ABC
+      Technologies' "PO number", the model answered with its real invoice number
+      (INV-2026-001) mislabeled as the PO number, instead of its actual real PO number
+      (PO-45879). The identifier itself is genuine (correctly not flagged as
+      fabricated) -- this is a semantic mislabeling / retrieval-coverage issue, a
+      different problem than identifier fabrication.
+
 ---
 
 ## Out of scope for this plan (explicit)
