@@ -12,6 +12,7 @@ import { extractPdfText } from "@/utils/pdf-text-extractor";
 import { isImageFile, isPdfFile } from "@/utils/document-file-type";
 import { mapInvoiceExtractionToInvoiceFields } from "@/schemas/invoice-mapper";
 import { InvoiceIndexingService } from "@/services/invoice-indexing.service";
+import type { InvoiceExtraction } from "@/schemas/invoice.schema";
 import type { IDocument } from "@/models/document.model";
 import type { IExtraction } from "@/models/extraction.model";
 import type { IInvoice } from "@/models/invoice.model";
@@ -262,24 +263,21 @@ export class DocumentIngestionService {
       });
 
       if (duplicates.length > 0) {
-        let cleanedUp = false;
+        const duplicateMessage =
+          `Duplicate invoice detected: an invoice numbered "${mappedFields.invoiceNumber}" from ` +
+          `"${mappedFields.vendorName}" dated ${mappedFields.invoiceDate.toDateString()} already exists ` +
+          `(document ${duplicates[0].documentId}). Skipped creating a new Invoice record -- flagged for review.`;
 
-        // Only safe to delete the Document/Email/Extraction just created for THIS
-        // attempt when the Document itself is brand new (isNew) -- nothing else
-        // references them yet. If the same file is being reprocessed (!isNew), this
-        // Document has real prior history (its emailId was already reassigned to this
-        // run's Email row by the upsert above) -- deleting would destroy that, not
-        // just redundant data, so it's left untouched in that case. A duplicate match
-        // is deterministic (exact vendor + invoice number + date), so there's nothing
-        // to review; it's safe to clean up rather than leave orphaned rows with no
-        // Invoice attached. The downloaded file on disk is deliberately left alone --
-        // only DB records are removed.
-        if (isNew) {
-          await this.repository.deleteExtractionsByDocumentId(document._id);
-          await this.repository.deleteDocumentById(document._id);
-          await this.repository.deleteEmailById(email._id);
-          cleanedUp = true;
-        }
+        // Left in place, not deleted or discarded -- a human decides via
+        // POST /api/documents/:id/process-anyway (create the invoice anyway; the
+        // extraction already succeeded and is preserved) or
+        // DELETE /api/documents/:id (confirm it's a real duplicate, discard it).
+        // duplicateOfDocumentId lets a review UI link straight to the existing invoice
+        // being matched against.
+        await this.repository.updateDocumentStatus(document._id, "DUPLICATE_REVIEW", {
+          lastError: duplicateMessage,
+          metadata: { ...document.metadata, duplicateOfDocumentId: duplicates[0].documentId.toString() },
+        });
 
         return {
           email,
@@ -287,11 +285,7 @@ export class DocumentIngestionService {
           extraction,
           invoice: null,
           classification,
-          message:
-            `Duplicate invoice detected: an invoice numbered "${mappedFields.invoiceNumber}" from ` +
-            `"${mappedFields.vendorName}" dated ${mappedFields.invoiceDate.toDateString()} already exists ` +
-            `(document ${duplicates[0].documentId}). Skipped creating a new Invoice record` +
-            (cleanedUp ? ", and removed this attempt's Document/Email/Extraction records." : "."),
+          message: duplicateMessage,
         };
       }
     }
@@ -416,5 +410,62 @@ export class DocumentIngestionService {
     });
 
     return { success: true, document, extraction, invoice, classification };
+  }
+
+  /**
+   * Creates the Invoice for a document that was flagged DUPLICATE_REVIEW, overriding
+   * the duplicate check -- a human has decided this one should be processed anyway
+   * (e.g. the match was a false positive). The extraction already succeeded when the
+   * duplicate was first detected and is reused as-is, not re-run against the model.
+   */
+  async processDuplicateAnyway(documentId: Types.ObjectId | string): Promise<{
+    success: boolean;
+    document: IDocument | null;
+    invoice: IInvoice | null;
+    error?: string;
+  }> {
+    const document = await this.repository.findDocumentById(documentId);
+    if (!document) {
+      return { success: false, document: null, invoice: null, error: "Document not found" };
+    }
+
+    if (document.status !== "DUPLICATE_REVIEW") {
+      return {
+        success: false,
+        document,
+        invoice: null,
+        error: `Document is not flagged for duplicate review (status: ${document.status}).`,
+      };
+    }
+
+    const extractions = await this.repository.findExtractionsByDocumentId(document._id);
+    const succeeded = extractions.find((extraction) => extraction.status === "SUCCEEDED");
+    if (!succeeded) {
+      return {
+        success: false,
+        document,
+        invoice: null,
+        error: "No successful extraction found to build an invoice from.",
+      };
+    }
+
+    const extractionData = succeeded.structuredData as unknown as InvoiceExtraction;
+
+    const invoice = await this.repository.createInvoice({
+      documentId: document._id,
+      ...mapInvoiceExtractionToInvoiceFields(extractionData),
+      status: "EXTRACTED",
+      metadata: { source: "duplicate-review-override" },
+    });
+
+    await this.indexingService.replaceChunksAndEmbeddings(document._id, invoice._id, extractionData, {
+      source: "duplicate-review-override",
+    });
+
+    const updatedDocument = await this.repository.updateDocumentStatus(document._id, "EXTRACTED", {
+      lastError: null,
+    });
+
+    return { success: true, document: updatedDocument, invoice };
   }
 }

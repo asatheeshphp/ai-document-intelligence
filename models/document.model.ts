@@ -7,7 +7,8 @@ export type DocumentStatus =
   | "EXTRACTED"
   | "OCR_REQUIRED"
   | "OCR_COMPLETE"
-  | "FAILED";
+  | "FAILED"
+  | "DUPLICATE_REVIEW";
 
 // RECEIPT/PURCHASE_ORDER/CONTRACT/RESUME/OTHER are retained only for backward
 // compatibility with already-stored rows from the earlier 6-way classifier -- nothing
@@ -62,7 +63,7 @@ const DocumentSchema = new Schema<IDocument>(
     checksum: { type: String },
     status: {
       type: String,
-      enum: ["PENDING", "DOWNLOADED", "EXTRACTING", "EXTRACTED", "OCR_REQUIRED", "OCR_COMPLETE", "FAILED"],
+      enum: ["PENDING", "DOWNLOADED", "EXTRACTING", "EXTRACTED", "OCR_REQUIRED", "OCR_COMPLETE", "FAILED", "DUPLICATE_REVIEW"],
       default: "PENDING",
     },
     extractedText: { type: String },

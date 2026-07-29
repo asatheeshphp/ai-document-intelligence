@@ -255,13 +255,13 @@ describe("DocumentIngestionService.processLocalDocument — duplicate invoice ch
     );
   }
 
-  it("skips creating a new invoice when the same vendor/number/date already exists on a different document", async () => {
+  it("flags a document DUPLICATE_REVIEW instead of creating an invoice, when vendor/number/date already exist elsewhere", async () => {
     const existingDocumentId = new Types.ObjectId();
     const otherDocumentId = new Types.ObjectId();
     const repository = fakeRepository({
       upsertDocumentBySourcePath: vi
         .fn()
-        .mockResolvedValue({ document: { _id: existingDocumentId }, isNew: true }),
+        .mockResolvedValue({ document: { _id: existingDocumentId, metadata: {} }, isNew: true }),
       listInvoices: vi.fn().mockResolvedValue([{ documentId: otherDocumentId }]),
     });
 
@@ -277,38 +277,21 @@ describe("DocumentIngestionService.processLocalDocument — duplicate invoice ch
     expect(repository.createInvoice).not.toHaveBeenCalled();
     expect(result.invoice).toBeNull();
     expect(result.message).toMatch(/Duplicate invoice detected/);
+    expect(result.message).toMatch(/flagged for review/);
 
-    // A brand-new Document/Email/Extraction were just created for this attempt and
-    // nothing else references them -- safe to clean up rather than leave orphaned rows.
-    expect(repository.deleteExtractionsByDocumentId).toHaveBeenCalledWith(existingDocumentId);
-    expect(repository.deleteDocumentById).toHaveBeenCalledWith(existingDocumentId);
-    expect(repository.deleteEmailById).toHaveBeenCalled();
-    expect(result.message).toMatch(/removed this attempt's Document\/Email\/Extraction records/);
-  });
-
-  it("does not delete anything when a reprocessed (not brand-new) document is flagged as a duplicate", async () => {
-    // Reprocessing an existing file that still matches another invoice's
-    // vendor/number/date: this Document has real prior history (its emailId was
-    // already reassigned to this run's Email row by the upsert) -- deleting it would
-    // destroy that, not just redundant data.
-    const existingDocumentId = new Types.ObjectId();
-    const otherDocumentId = new Types.ObjectId();
-    const repository = fakeRepository({
-      upsertDocumentBySourcePath: vi
-        .fn()
-        .mockResolvedValue({ document: { _id: existingDocumentId }, isNew: false }),
-      listInvoices: vi.fn().mockResolvedValue([{ documentId: otherDocumentId }]),
-    });
-
-    const service = buildService(repository);
-    const result = await service.processLocalDocument({ sourcePath: "data/samples/invoice-dup-reprocess.pdf" });
-
-    expect(result.invoice).toBeNull();
-    expect(result.message).toMatch(/Duplicate invoice detected/);
-    expect(result.message).not.toMatch(/removed this attempt's/);
+    // Nothing is deleted -- a human decides via processDuplicateAnyway or the existing
+    // DELETE /api/documents/:id endpoint. The document is marked, not discarded.
     expect(repository.deleteDocumentById).not.toHaveBeenCalled();
     expect(repository.deleteEmailById).not.toHaveBeenCalled();
     expect(repository.deleteExtractionsByDocumentId).not.toHaveBeenCalled();
+    expect(repository.updateDocumentStatus).toHaveBeenCalledWith(
+      existingDocumentId,
+      "DUPLICATE_REVIEW",
+      expect.objectContaining({
+        lastError: expect.stringContaining("Duplicate invoice detected"),
+        metadata: expect.objectContaining({ duplicateOfDocumentId: otherDocumentId.toString() }),
+      })
+    );
   });
 
   it("creates the invoice normally when no duplicate exists", async () => {
@@ -343,5 +326,86 @@ describe("DocumentIngestionService.processLocalDocument — duplicate invoice ch
     );
     expect(repository.deleteInvoicesByDocumentId).toHaveBeenCalledWith(existingDocumentId);
     expect(repository.createInvoice).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("DocumentIngestionService.processDuplicateAnyway", () => {
+  const structuredData = {
+    invoice: { invoiceNumber: "INV-1001", invoiceDate: "2026-07-20", dueDate: null, poNumber: null, currency: null },
+    supplier: { name: "Vendor Co" },
+    customer: { name: "Customer Co" },
+    totals: { subtotal: null, totalTax: null, grandTotal: null },
+  };
+
+  function buildService(repository: ProcessingRepository) {
+    return new DocumentIngestionService(
+      repository,
+      {} as unknown as OllamaService,
+      { replaceChunksAndEmbeddings: vi.fn().mockResolvedValue(undefined) } as unknown as InvoiceIndexingService,
+      new DocumentQualityService(),
+      {} as unknown as VisionExtractionService,
+      {} as unknown as DocumentClassifierService
+    );
+  }
+
+  it("creates the invoice from the already-succeeded extraction, overriding the duplicate flag", async () => {
+    const documentId = new Types.ObjectId();
+    const repository = fakeRepository({
+      findDocumentById: vi.fn().mockResolvedValue({ _id: documentId, status: "DUPLICATE_REVIEW" }),
+      findExtractionsByDocumentId: vi
+        .fn()
+        .mockResolvedValue([{ status: "SUCCEEDED", structuredData }]),
+      updateDocumentStatus: vi.fn().mockResolvedValue({ _id: documentId, status: "EXTRACTED" }),
+    });
+
+    const service = buildService(repository);
+    const result = await service.processDuplicateAnyway(documentId);
+
+    expect(result.success).toBe(true);
+    expect(repository.createInvoice).toHaveBeenCalledWith(
+      expect.objectContaining({ documentId, vendorName: "Vendor Co", invoiceNumber: "INV-1001" })
+    );
+    expect(repository.updateDocumentStatus).toHaveBeenCalledWith(documentId, "EXTRACTED", { lastError: null });
+    expect(result.document?.status).toBe("EXTRACTED");
+  });
+
+  it("fails if the document isn't flagged for duplicate review", async () => {
+    const documentId = new Types.ObjectId();
+    const repository = fakeRepository({
+      findDocumentById: vi.fn().mockResolvedValue({ _id: documentId, status: "EXTRACTED" }),
+    });
+
+    const service = buildService(repository);
+    const result = await service.processDuplicateAnyway(documentId);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/not flagged for duplicate review/);
+    expect(repository.createInvoice).not.toHaveBeenCalled();
+  });
+
+  it("fails if no successful extraction exists to build the invoice from", async () => {
+    const documentId = new Types.ObjectId();
+    const repository = fakeRepository({
+      findDocumentById: vi.fn().mockResolvedValue({ _id: documentId, status: "DUPLICATE_REVIEW" }),
+      findExtractionsByDocumentId: vi.fn().mockResolvedValue([{ status: "FAILED", structuredData: {} }]),
+    });
+
+    const service = buildService(repository);
+    const result = await service.processDuplicateAnyway(documentId);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/No successful extraction/);
+  });
+
+  it("fails if the document doesn't exist", async () => {
+    const repository = fakeRepository({
+      findDocumentById: vi.fn().mockResolvedValue(null),
+    });
+
+    const service = buildService(repository);
+    const result = await service.processDuplicateAnyway(new Types.ObjectId());
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("Document not found");
   });
 });
