@@ -246,16 +246,47 @@ export class DocumentIngestionService {
       };
     }
 
-    // Only now -- extraction has actually succeeded -- is it safe to remove the prior
-    // run's Invoice. replaceChunksAndEmbeddings below handles its own chunks/embeddings
-    // deletion the same way (new embeddings generated before old ones are removed).
+    const mappedFields = mapInvoiceExtractionToInvoiceFields(extractionOutcome.data);
+
+    // Only checked when all three are present -- vendor name, invoice number, and
+    // invoice date together, not invoice number alone, since two unrelated vendors can
+    // legitimately reuse the same invoice number scheme. Excludes this document's own
+    // prior invoice (documentId $ne) so re-ingesting/reprocessing the same file never
+    // flags itself as a duplicate of itself.
+    if (mappedFields.vendorName && mappedFields.invoiceNumber && mappedFields.invoiceDate) {
+      const duplicates = await this.repository.listInvoices({
+        vendorName: mappedFields.vendorName,
+        invoiceNumber: mappedFields.invoiceNumber,
+        invoiceDate: mappedFields.invoiceDate,
+        documentId: { $ne: document._id },
+      });
+
+      if (duplicates.length > 0) {
+        return {
+          email,
+          document,
+          extraction,
+          invoice: null,
+          classification,
+          message:
+            `Duplicate invoice detected: an invoice numbered "${mappedFields.invoiceNumber}" from ` +
+            `"${mappedFields.vendorName}" dated ${mappedFields.invoiceDate.toDateString()} already exists ` +
+            `(document ${duplicates[0].documentId}). Skipped creating a new Invoice record.`,
+        };
+      }
+    }
+
+    // Only now -- extraction has actually succeeded and no duplicate was found -- is it
+    // safe to remove the prior run's Invoice. replaceChunksAndEmbeddings below handles
+    // its own chunks/embeddings deletion the same way (new embeddings generated before
+    // old ones are removed).
     if (!isNew) {
       await this.repository.deleteInvoicesByDocumentId(document._id);
     }
 
     const invoice = await this.repository.createInvoice({
       documentId: document._id,
-      ...mapInvoiceExtractionToInvoiceFields(extractionOutcome.data),
+      ...mappedFields,
       status: "EXTRACTED",
       metadata: { source: "local-folder" },
     });

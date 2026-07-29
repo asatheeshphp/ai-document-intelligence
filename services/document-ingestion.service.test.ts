@@ -27,6 +27,7 @@ function fakeRepository(overrides: Record<string, unknown> = {}): ProcessingRepo
     updateDocumentStatus: vi.fn().mockResolvedValue(undefined),
     createExtraction: vi.fn().mockResolvedValue({ _id: new Types.ObjectId() }),
     createInvoice: vi.fn().mockResolvedValue({ _id: new Types.ObjectId() }),
+    listInvoices: vi.fn().mockResolvedValue([]),
     ...overrides,
   } as unknown as ProcessingRepository;
 }
@@ -214,5 +215,99 @@ describe("DocumentIngestionService.processLocalDocument — re-ingestion", () =>
     expect(repository.deleteEmbeddingsByDocumentId).not.toHaveBeenCalled();
     expect(repository.deleteInvoicesByDocumentId).not.toHaveBeenCalled();
     expect(repository.deleteExtractionsByDocumentId).not.toHaveBeenCalled();
+  });
+});
+
+describe("DocumentIngestionService.processLocalDocument — duplicate invoice check", () => {
+  const validExtractionData = {
+    invoice: { invoiceNumber: "INV-1001", invoiceDate: "2026-07-20", dueDate: null, poNumber: null, currency: null },
+    supplier: { name: "Vendor Co" },
+    customer: { name: "Customer Co" },
+    totals: { subtotal: null, totalTax: null, grandTotal: null },
+  };
+
+  function buildService(repository: ProcessingRepository) {
+    const visionExtractionService = {
+      extractText: vi.fn().mockResolvedValue("Invoice Number: INV-1001"),
+    } as unknown as VisionExtractionService;
+
+    const documentClassifierService = {
+      classify: vi.fn().mockResolvedValue({ documentType: "INVOICE", confidence: 0.9 }),
+    } as unknown as DocumentClassifierService;
+
+    const ollamaService = {
+      extractInvoiceData: vi.fn().mockResolvedValue({ success: true, data: validExtractionData, raw: "{}" }),
+    } as unknown as OllamaService;
+
+    const indexingService = {
+      replaceChunksAndEmbeddings: vi.fn().mockResolvedValue(undefined),
+    } as unknown as InvoiceIndexingService;
+
+    return new DocumentIngestionService(
+      repository,
+      ollamaService,
+      indexingService,
+      new DocumentQualityService(),
+      visionExtractionService,
+      documentClassifierService
+    );
+  }
+
+  it("skips creating a new invoice when the same vendor/number/date already exists on a different document", async () => {
+    const existingDocumentId = new Types.ObjectId();
+    const otherDocumentId = new Types.ObjectId();
+    const repository = fakeRepository({
+      upsertDocumentBySourcePath: vi
+        .fn()
+        .mockResolvedValue({ document: { _id: existingDocumentId }, isNew: true }),
+      listInvoices: vi.fn().mockResolvedValue([{ documentId: otherDocumentId }]),
+    });
+
+    const service = buildService(repository);
+    const result = await service.processLocalDocument({ sourcePath: "data/samples/invoice-dup.pdf" });
+
+    expect(repository.listInvoices).toHaveBeenCalledWith({
+      vendorName: "Vendor Co",
+      invoiceNumber: "INV-1001",
+      invoiceDate: expect.any(Date),
+      documentId: { $ne: existingDocumentId },
+    });
+    expect(repository.createInvoice).not.toHaveBeenCalled();
+    expect(result.invoice).toBeNull();
+    expect(result.message).toMatch(/Duplicate invoice detected/);
+  });
+
+  it("creates the invoice normally when no duplicate exists", async () => {
+    const documentId = new Types.ObjectId();
+    const repository = fakeRepository({
+      upsertDocumentBySourcePath: vi.fn().mockResolvedValue({ document: { _id: documentId }, isNew: true }),
+      listInvoices: vi.fn().mockResolvedValue([]),
+    });
+
+    const service = buildService(repository);
+    const result = await service.processLocalDocument({ sourcePath: "data/samples/invoice-unique.pdf" });
+
+    expect(repository.createInvoice).toHaveBeenCalledTimes(1);
+    expect(result.invoice).not.toBeNull();
+  });
+
+  it("excludes this document's own prior invoice from the duplicate check when reprocessing", async () => {
+    const existingDocumentId = new Types.ObjectId();
+    const listInvoices = vi.fn().mockResolvedValue([]);
+    const repository = fakeRepository({
+      upsertDocumentBySourcePath: vi
+        .fn()
+        .mockResolvedValue({ document: { _id: existingDocumentId }, isNew: false }),
+      listInvoices,
+    });
+
+    const service = buildService(repository);
+    await service.processLocalDocument({ sourcePath: "data/samples/invoice-reprocess.pdf" });
+
+    expect(listInvoices).toHaveBeenCalledWith(
+      expect.objectContaining({ documentId: { $ne: existingDocumentId } })
+    );
+    expect(repository.deleteInvoicesByDocumentId).toHaveBeenCalledWith(existingDocumentId);
+    expect(repository.createInvoice).toHaveBeenCalledTimes(1);
   });
 });
