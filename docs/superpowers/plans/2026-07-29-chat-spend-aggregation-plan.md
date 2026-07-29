@@ -410,7 +410,7 @@ prompt only).
       behaves exactly as the documented limitation predicts (unchanged). A synthetic
       case surfaced a SEPARATE, additional gap during this verification -- flagged to
       the user, not silently folded into this fix -- see the note below.
-- [ ] **Flagged, not yet built**: near-universal invoice-vocabulary words ("amount",
+- [x] **Flagged, then fixed (see below)**: near-universal invoice-vocabulary words ("amount",
       "total") can still cause a false premise-pass even on a real, literal word match
       -- e.g. "summarize the electricity bill amount" named ABC Technologies' invoice and
       cited its real Installation Service line ($5,000), passing the premise check only
@@ -422,6 +422,29 @@ prompt only).
       like "amount"/"total" from the premise check's vocabulary the same way
       "invoice"/"invoices" and bare years already are. Awaiting a decision on scope
       before building.
+- [x] **Fixed.** Excluded near-universal payment/tax vocabulary ("amount", "total",
+      "totals", "subtotal", "tax", "taxes", "charge", "charges", "due", "payment",
+      "payments") from `utils/lexical-score.ts`'s shared `STOPWORDS` -- the same list
+      already excluding "invoice"/"invoices" for the identical reason (near-universal
+      across this corpus, not a real relevance signal). Scoped to the shared tokenizer
+      rather than a rag.service.ts-local list, since these words are exactly as
+      non-distinguishing for `SearchService`'s lexical-ranking boost as for the premise
+      check -- one source of truth, and confirmed no existing search test relies on
+      these words driving a match (they're all near-universal there too, so removing
+      them reduces ranking noise rather than useful signal).
+- [x] 2 new `lexical-score.test.ts` tests (generic vocabulary alone scores 0; a real
+      keyword alongside generic vocabulary still scores correctly) + 1 new
+      `rag.service.test.ts` regression test reproducing the exact live bug ("summarize
+      the electricity bill amount" naming a real invoice/number but never mentioning
+      electricity). 34/34 passing across both files.
+- [x] `npx tsc --noEmit` clean; `npm test` at 147/148 (same pre-existing, unrelated
+      missing-sample-PDF failure noted in Task 5).
+- [x] Live-verified against the real dev server: "summarize the electricity bill
+      amount" no longer confidently misattributes to ABC Technologies' invoice (search
+      itself now correctly finds nothing above threshold for this query, having lost the
+      "amount"-driven lexical-boost noise). Re-confirmed regressions: invoice 27639's
+      grand total, the "internet 2026" premise-mismatch fallback, and general search
+      queries (`GST tax`, `grand total amount`) all unchanged and correct.
 
 ---
 

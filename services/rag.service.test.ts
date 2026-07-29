@@ -605,6 +605,41 @@ describe("RagService.answer — grounding verification", () => {
     // comment) -- misattribution of a REAL number has been, which this fix does catch.
     expect(result.answer).toBe("The total is 999999.");
   });
+
+  it("rejects a premise mismatch even when the answer names the invoice, once generic payment vocabulary is excluded from the overlap check", async () => {
+    // Reproduces the confirmed live bug: "summarize the electricity bill amount" named
+    // a real invoice and cited its real Installation Service line ($5,000), but only
+    // passed the premise check because "amount" is a genuine word in that invoice's own
+    // line items -- "electricity" itself, the actual topic, never appears anywhere.
+    const searchResults = [
+      fakeSearchResult({
+        invoiceId: "inv-1",
+        invoice: { invoiceNumber: "INV-2026-001", vendorName: "ABC Technologies Pvt. Ltd." },
+        chunkText: "Supplier: ABC Technologies Pvt. Ltd.",
+      }),
+    ];
+    const searchService = { search: vi.fn().mockResolvedValue({ results: searchResults }) } as unknown as SearchService;
+    const ollamaService = {
+      chatCompletion: vi
+        .fn()
+        .mockResolvedValue(
+          "The invoice for the electricity bill is Invoice INV-2026-001. The total amount for the electricity service provided is 5000 rupees."
+        ),
+    } as unknown as OllamaService;
+    const spendQueryService = { getVendorSpendSummary: vi.fn() } as unknown as SpendQueryService;
+    const chatIntentService = fakeChatIntentService({ type: "RETRIEVAL" });
+    const repository = fakeRepository({
+      findChunksByInvoiceId: vi.fn().mockResolvedValue([
+        { chunkType: "header", text: "Supplier: ABC Technologies Pvt. Ltd." },
+        { chunkType: "line_items", text: "Installation Service, qty 1, unit price 5000, amount 5000" },
+      ]),
+    });
+
+    const service = new RagService(searchService, ollamaService, spendQueryService, chatIntentService, repository);
+    const result = await service.answer({ question: "summarize the electricity bill amount" });
+
+    expect(result.answer).toMatch(/doesn't appear to mention what you asked about/);
+  });
 });
 
 describe("RagService.answer — status-filter path", () => {

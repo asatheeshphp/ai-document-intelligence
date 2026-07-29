@@ -51,4 +51,19 @@ describe("lexicalOverlapScore", () => {
   it("still scores a real match when the query has a year plus a genuine keyword", () => {
     expect(lexicalOverlapScore("CloudNova invoice 2026", "Supplier: CloudNova Software")).toBe(1);
   });
+
+  it("does not treat generic payment/tax vocabulary as a relevance signal", () => {
+    // Reproduces the reported bug: "summarize the electricity bill amount" matched an
+    // unrelated invoice purely because "amount" is a genuine word in nearly every
+    // invoice's own line items, not because the invoice had anything to do with
+    // electricity. These words appear in almost every invoice in this corpus
+    // regardless of what it's actually for, so they shouldn't count as overlap.
+    expect(lexicalOverlapScore("the total amount due", "qty 1, amount 5000, Total Tax: 7200")).toBe(0);
+  });
+
+  it("still scores a real match when a genuine keyword accompanies generic payment vocabulary", () => {
+    // "total"/"amount" are filtered as generic, but "electricity" -- the only real
+    // content word left -- still matches, so this isn't a blanket zero-out.
+    expect(lexicalOverlapScore("total amount for electricity", "Electricity Charges, amount 5000")).toBe(1);
+  });
 });

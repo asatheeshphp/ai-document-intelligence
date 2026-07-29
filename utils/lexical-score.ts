@@ -3,6 +3,16 @@ const STOPWORDS = new Set([
   "is", "are", "was", "were", "be", "been", "this", "that", "it", "as", "into",
   "what", "which", "who", "whom", "how", "when", "where", "why",
   "show", "find", "me", "please", "about", "invoice", "invoices",
+  // Same "near-universal, not a real signal of relevance" reasoning as "invoice"/
+  // "invoices" above, extended to the payment/tax vocabulary every invoice in this
+  // corpus shares. Confirmed live: "summarize the electricity bill amount" passed
+  // rag.service.ts's premise check purely because "amount" is a genuine word in the
+  // named invoice's own line items (e.g. "qty 1, amount 5000") -- "electricity" itself,
+  // the actual topic, never appeared anywhere. These words appear in nearly every
+  // invoice's payment/tax chunk regardless of what the invoice is actually for, so
+  // counting them as a relevance/grounding signal produces false matches rather than
+  // real ones.
+  "amount", "total", "totals", "subtotal", "tax", "taxes", "charge", "charges", "due", "payment", "payments",
 ]);
 
 // A bare 4-digit token almost always reads as a calendar year in an invoice corpus, and
