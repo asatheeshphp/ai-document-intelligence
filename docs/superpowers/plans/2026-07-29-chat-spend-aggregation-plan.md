@@ -116,6 +116,46 @@ prompt only).
       same correct total as the English version -- confirms intent detection isn't
       English-only.
 
+### Task 6: Fix intent inconsistency and vendor-name mangling — found via ad-hoc live testing beyond Task 5's scripted cases
+
+**Files:** `services/chat-intent.service.ts` (new), `services/chat-intent.service.test.ts`
+(new), `services/rag.service.ts`, `services/rag.service.test.ts`,
+`services/ollama.service.ts`, `services/spend-query.service.ts`,
+`services/spend-query.service.test.ts`
+
+- [x] Asking "How much have I paid Express Cargo?" (phrased identically to the
+      already-verified Readylink/SuperStore questions) surfaced two distinct problems,
+      each confirmed by direct investigation, not assumed:
+      1. The model itself answered `RETRIEVAL` for this question on a single call,
+         despite recognizing the identical pattern correctly for other vendors -- the
+         same self-consistency failure mode already fixed once for document
+         classification (see Task 13 of the email-inbox-ingestion plan).
+      2. Once that was fixed, the model still sometimes extracted the vendor as
+         `"ExpressCargo"` (no space) instead of `"Express Cargo"`, which silently failed
+         the exact-regex match against the real space-containing `vendorName` and fell
+         through to retrieval -- which then answered with a hallucinated, wrong total
+         copied from an unrelated invoice.
+- [x] Fix 1: new `ChatIntentService` wraps `detectChatIntent` with a 3-vote majority,
+      mirroring `DocumentClassifierService` exactly. `RagService` now depends on
+      `ChatIntentService` instead of calling `OllamaService.detectChatIntent` directly.
+- [x] Fix 2: `buildChatIntentPrompt` explicitly instructs the model to preserve vendor
+      spacing exactly; `SpendQueryService` additionally builds a whitespace-tolerant
+      regex pattern (strips whitespace from the extracted text, rejoins each character
+      with an optional `\s*`) so `"ExpressCargo"` and `"Express Cargo"` produce an
+      identical, correctly-matching pattern regardless of which one the model returns --
+      a prompt fix alone isn't a guarantee, same lesson as the date-parsing fix earlier
+      this session.
+- [x] Unit tests added: `ChatIntentService`'s majority-vote behavior (5 tests, mirroring
+      `document-classifier.service.test.ts`); `SpendQueryService`'s whitespace-tolerant
+      pattern building (3 new tests, plus 1 existing test updated since the transform
+      now runs on every pattern, not just ones with spaces); `RagService`'s tests updated
+      to inject a mocked `ChatIntentService` instead of mocking `detectChatIntent`
+      directly.
+- [x] Live-verified: "How much have I paid Express Cargo?" now correctly returns
+      `mode: "computed"` with the exact real total (45810, cross-checked directly
+      against the database) -- matching the reliability already established for
+      Readylink and SuperStore.
+
 ---
 
 ## Out of scope for this plan (explicit)
