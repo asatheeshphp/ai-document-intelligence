@@ -5,6 +5,7 @@ import type { OllamaService } from "@/services/ollama.service";
 import type { SpendQueryService } from "@/services/spend-query.service";
 import type { ChatIntentService } from "@/services/chat-intent.service";
 import type { ProcessingRepository } from "@/repositories/processing.repository";
+import type { InvoiceStatusQueryService } from "@/services/invoice-status-query.service";
 
 function fakeSearchResult(overrides: Partial<SearchResultItem> = {}): SearchResultItem {
   return {
@@ -23,6 +24,10 @@ function fakeChatIntentService(intent: Record<string, unknown>): ChatIntentServi
 
 function fakeRepository(overrides: Record<string, unknown> = {}): ProcessingRepository {
   return { findChunksByInvoiceId: vi.fn().mockResolvedValue([]), ...overrides } as unknown as ProcessingRepository;
+}
+
+function fakeInvoiceStatusQueryService(overrides: Record<string, unknown> = {}): InvoiceStatusQueryService {
+  return { listByStatus: vi.fn().mockResolvedValue([]), ...overrides } as unknown as InvoiceStatusQueryService;
 }
 
 describe("RagService.answer — aggregation path", () => {
@@ -447,5 +452,62 @@ describe("RagService.answer — grounding verification", () => {
     // non-ASCII the premise check is skipped -- only the numeric check applies, and
     // 1767 does appear in the invoice's own chunk, so the answer passes through.
     expect(result.answer).toBe("Readylink Internet Services Limited-க்கான தொகை 1767 ரூபாய்.");
+  });
+});
+
+describe("RagService.answer — status-filter path", () => {
+  it("answers with a computed list when intent detection finds a status filter", async () => {
+    const searchService = { search: vi.fn() } as unknown as SearchService;
+    const ollamaService = { chatCompletion: vi.fn() } as unknown as OllamaService;
+    const spendQueryService = { getVendorSpendSummary: vi.fn() } as unknown as SpendQueryService;
+    const chatIntentService = fakeChatIntentService({ type: "STATUS_FILTER", status: "UNPAID" });
+    const dueDate = new Date("2026-08-01T00:00:00.000Z");
+    const invoiceStatusQueryService = fakeInvoiceStatusQueryService({
+      listByStatus: vi.fn().mockResolvedValue([
+        { invoiceNumber: "INV-1", vendorName: "Vendor Co", totalAmount: 500, currency: "USD", dueDate },
+      ]),
+    });
+
+    const service = new RagService(
+      searchService,
+      ollamaService,
+      spendQueryService,
+      chatIntentService,
+      fakeRepository(),
+      invoiceStatusQueryService
+    );
+    const result = await service.answer({ question: "Any unpaid invoices?" });
+
+    expect(result.mode).toBe("computed");
+    expect(result.sources).toEqual([]);
+    expect(result.answer).toContain("Found 1 unpaid invoice");
+    expect(result.answer).toContain("INV-1");
+    expect(result.answer).toContain("Vendor Co");
+    expect(result.answer).toContain("USD 500.00");
+    expect(result.answer).toContain("2026-08-01");
+    expect(searchService.search).not.toHaveBeenCalled();
+    expect(invoiceStatusQueryService.listByStatus).toHaveBeenCalledWith("UNPAID");
+  });
+
+  it("answers directly with a clear zero-results message rather than falling through to retrieval", async () => {
+    const searchService = { search: vi.fn() } as unknown as SearchService;
+    const ollamaService = { chatCompletion: vi.fn() } as unknown as OllamaService;
+    const spendQueryService = { getVendorSpendSummary: vi.fn() } as unknown as SpendQueryService;
+    const chatIntentService = fakeChatIntentService({ type: "STATUS_FILTER", status: "OVERDUE" });
+    const invoiceStatusQueryService = fakeInvoiceStatusQueryService();
+
+    const service = new RagService(
+      searchService,
+      ollamaService,
+      spendQueryService,
+      chatIntentService,
+      fakeRepository(),
+      invoiceStatusQueryService
+    );
+    const result = await service.answer({ question: "Which invoices are overdue?" });
+
+    expect(result.mode).toBe("computed");
+    expect(result.answer).toBe("I couldn't find any overdue invoices.");
+    expect(searchService.search).not.toHaveBeenCalled();
   });
 });

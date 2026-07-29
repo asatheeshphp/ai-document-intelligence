@@ -1,6 +1,7 @@
 import { SearchService } from "@/services/search.service";
 import { OllamaService } from "@/services/ollama.service";
 import { SpendQueryService, type VendorSpendSummary } from "@/services/spend-query.service";
+import { InvoiceStatusQueryService, type InvoiceStatusSummaryItem } from "@/services/invoice-status-query.service";
 import { ChatIntentService } from "@/services/chat-intent.service";
 import { ProcessingRepository } from "@/repositories/processing.repository";
 import { hasMeaningfulTokens, extractMeaningfulTokens } from "@/utils/lexical-score";
@@ -173,13 +174,43 @@ function formatSpendAnswer(summary: VendorSpendSummary, intent: ChatIntent): str
   return base;
 }
 
+const STATUS_FILTER_LABELS: Record<"PAID" | "UNPAID" | "OVERDUE", string> = {
+  PAID: "paid",
+  UNPAID: "unpaid",
+  OVERDUE: "overdue",
+};
+
+// Fixed string template, deliberately NOT an LLM call -- same reasoning as
+// formatSpendAnswer: the list of invoices and their fields comes straight from
+// InvoiceStatusQueryService/MongoDB, never touched by the model.
+function formatStatusFilterAnswer(invoices: InvoiceStatusSummaryItem[], status: "PAID" | "UNPAID" | "OVERDUE"): string {
+  const label = STATUS_FILTER_LABELS[status];
+
+  if (invoices.length === 0) {
+    return `I couldn't find any ${label} invoices.`;
+  }
+
+  const lines = invoices.map((invoice) => {
+    const amountLabel =
+      invoice.totalAmount !== undefined
+        ? `${invoice.currency ? `${invoice.currency} ` : ""}${invoice.totalAmount.toFixed(2)}`
+        : "amount unknown";
+    const dueLabel = invoice.dueDate ? `, due ${invoice.dueDate.toISOString().slice(0, 10)}` : "";
+    return `- Invoice ${invoice.invoiceNumber ?? "(unknown number)"} — ${invoice.vendorName ?? "(unknown vendor)"} — ${amountLabel}${dueLabel}`;
+  });
+
+  const invoiceWord = invoices.length === 1 ? "invoice" : "invoices";
+  return `Found ${invoices.length} ${label} ${invoiceWord}:\n${lines.join("\n")}`;
+}
+
 export class RagService {
   constructor(
     private readonly searchService: SearchService = new SearchService(),
     private readonly ollamaService: OllamaService = new OllamaService(),
     private readonly spendQueryService: SpendQueryService = new SpendQueryService(),
     private readonly chatIntentService: ChatIntentService = new ChatIntentService(),
-    private readonly repository: ProcessingRepository = new ProcessingRepository()
+    private readonly repository: ProcessingRepository = new ProcessingRepository(),
+    private readonly invoiceStatusQueryService: InvoiceStatusQueryService = new InvoiceStatusQueryService()
   ) {}
 
   async answer(input: RagAnswerInput): Promise<RagAnswer> {
@@ -200,6 +231,16 @@ export class RagService {
       // No invoices matched that vendor -- fall through to retrieval rather than
       // dead-ending, in case the extracted vendor name was wrong and retrieval can
       // still surface something useful.
+    }
+
+    if (intent?.type === "STATUS_FILTER" && intent.status) {
+      // Unlike AGGREGATION's vendor match, a status value is a closed enum the model
+      // either got right or (rarely) mis-set -- there's no "vendor name might be
+      // slightly wrong" ambiguity to fall through on, so this always answers directly,
+      // including the zero-results case ("I couldn't find any unpaid invoices" is
+      // itself a real, useful answer, not a failure to dead-end from).
+      const invoices = await this.invoiceStatusQueryService.listByStatus(intent.status);
+      return { answer: formatStatusFilterAnswer(invoices, intent.status), sources: [], mode: "computed" };
     }
 
     const { results } = await this.searchService.search({

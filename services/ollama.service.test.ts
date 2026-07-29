@@ -268,6 +268,30 @@ describe("OllamaService.detectChatIntent", () => {
     expect(outcome.data).toEqual({ type: "RETRIEVAL" });
   });
 
+  it("parses STATUS_FILTER with status=UNPAID", async () => {
+    vi.mocked(axios.post).mockResolvedValue({
+      data: { message: { content: "ANSWER: STATUS_FILTER status=UNPAID" } },
+    });
+
+    const service = new OllamaService();
+    const outcome = await service.detectChatIntent("Any unpaid invoices?");
+
+    expect(outcome.success).toBe(true);
+    expect(outcome.data).toEqual({ type: "STATUS_FILTER", status: "UNPAID" });
+  });
+
+  it("parses STATUS_FILTER with status=OVERDUE", async () => {
+    vi.mocked(axios.post).mockResolvedValue({
+      data: { message: { content: "ANSWER: STATUS_FILTER status=OVERDUE" } },
+    });
+
+    const service = new OllamaService();
+    const outcome = await service.detectChatIntent("Which invoices are overdue?");
+
+    expect(outcome.success).toBe(true);
+    expect(outcome.data).toEqual({ type: "STATUS_FILTER", status: "OVERDUE" });
+  });
+
   it("returns a failure outcome when no ANSWER line is present", async () => {
     vi.mocked(axios.post).mockResolvedValue({
       data: { message: { content: "I'm not sure how to classify this." } },

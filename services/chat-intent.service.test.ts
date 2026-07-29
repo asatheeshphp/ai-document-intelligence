@@ -67,6 +67,36 @@ describe("ChatIntentService.detectIntent", () => {
     expect(result).toEqual({ type: "RETRIEVAL" });
   });
 
+  it("takes the majority vote for STATUS_FILTER (2 STATUS_FILTER vs 1 RETRIEVAL)", async () => {
+    const ollama = fakeOllamaServiceWithSequence([
+      { success: true, data: { type: "STATUS_FILTER", status: "UNPAID" } },
+      { success: true, data: { type: "RETRIEVAL" } },
+      { success: true, data: { type: "STATUS_FILTER", status: "UNPAID" } },
+    ]);
+    const service = new ChatIntentService(ollama);
+
+    const result = await service.detectIntent("Any unpaid invoices?");
+
+    expect(result).toEqual({ type: "STATUS_FILTER", status: "UNPAID" });
+  });
+
+  it("falls back to RETRIEVAL on a true 3-way tie (1 AGGREGATION vs 1 RETRIEVAL vs 1 STATUS_FILTER)", async () => {
+    // With 3 categories now possible, a 3-vote split can be a genuine tie -- unlike the
+    // old 2-category version where 3 votes always had a clear winner. An uncertain
+    // result should fall through to the safe retrieval path rather than gambling on
+    // either computed-answer category.
+    const ollama = fakeOllamaServiceWithSequence([
+      { success: true, data: { type: "AGGREGATION", vendor: "SuperStore" } },
+      { success: true, data: { type: "RETRIEVAL" } },
+      { success: true, data: { type: "STATUS_FILTER", status: "UNPAID" } },
+    ]);
+    const service = new ChatIntentService(ollama);
+
+    const result = await service.detectIntent("some ambiguous question");
+
+    expect(result).toEqual({ type: "RETRIEVAL" });
+  });
+
   it("counts a failed individual attempt as a RETRIEVAL vote rather than aborting", async () => {
     const ollama = fakeOllamaServiceWithSequence([
       { success: true, data: { type: "AGGREGATION", vendor: "SuperStore" } },

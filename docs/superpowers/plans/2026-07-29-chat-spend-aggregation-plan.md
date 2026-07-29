@@ -281,6 +281,59 @@ prompt only).
       before: invoice 27639's grand total, the Express Cargo aggregation query (by name
       and by "logistics"), all unchanged.
 
+### Task 10: STATUS_FILTER intent — answer "any unpaid invoices?" with real payment-status data
+
+**Files:** `schemas/chat-intent.schema.ts`, `services/ollama.service.ts`,
+`services/ollama.service.test.ts`, `services/chat-intent.service.ts`,
+`services/chat-intent.service.test.ts`, `services/invoice-status-query.service.ts` (new),
+`services/invoice-status-query.service.test.ts` (new), `services/rag.service.ts`,
+`services/rag.service.test.ts`
+
+- [x] "any unpaid invoices?" and "get unpaid invoices" both returned a generic
+      non-answer via retrieval ("I couldn't find anything relevant..."). Confirmed via
+      investigation: `paymentStatus`/`dueDate` are real fields on the invoice model
+      (`models/invoice.model.ts`), already used by the existing `/api/invoices/due`
+      reminders endpoint, but `services/rag.service.ts`, `chat-intent.service.ts`, and
+      `spend-query.service.ts` had zero awareness of either field — payment status is
+      metadata, not something semantic search over invoice text chunks can ever answer,
+      structurally the same gap AGGREGATION was built to close for vendor-spend totals.
+- [x] Added a third chat intent, `STATUS_FILTER`, alongside `AGGREGATION`/`RETRIEVAL`:
+      `ChatIntentSchema` gained the type plus an optional `status: "PAID" | "UNPAID" |
+      "OVERDUE"`; `buildChatIntentPrompt`/`CHAT_INTENT_PATTERN`/`parseChatIntentResponse`
+      in `ollama.service.ts` extended to detect and parse it the same reasoning-then-
+      `ANSWER:`-line way as the other two.
+- [x] `ChatIntentService`'s majority-vote logic generalized from a 2-category to an
+      N-category tally (`Map`-based counts) — with 3 categories now possible, a 3-vote
+      split can be a genuine tie (1-1-1), unlike the old 2-category version where 3
+      votes always had a clear winner. Ties, and any RETRIEVAL win, default to
+      RETRIEVAL — an uncertain vote shouldn't gamble on presenting a computed
+      number/list as fact.
+- [x] New `InvoiceStatusQueryService.listByStatus(status)` — deliberately mirrors
+      `app/api/invoices/due/route.ts`'s existing filter exactly (`paymentStatus: { $ne:
+      "PAID" }` for UNPAID, handling legacy rows with no stored status the same way;
+      `dueDate: { $ne: null, $lt: now }` added for OVERDUE; `paymentStatus: "PAID"` for
+      PAID) so a chat question resolves to the same data that page's UI already
+      surfaces, not a second, possibly-diverging definition.
+- [x] Wired into `RagService.answer()`: `STATUS_FILTER` always answers directly from a
+      fixed string template (`formatStatusFilterAnswer`, never LLM-touched, same
+      `mode: "computed"` pattern as spend totals) — including the zero-results case
+      ("I couldn't find any paid invoices" is a real, useful answer, not a
+      fall-through-to-retrieval case, since status is a closed enum with no "vendor name
+      might be slightly wrong" ambiguity to fall through on).
+- [x] 12 new unit tests across the 4 files (STATUS_FILTER parsing, 3-category majority
+      vote including the new tie-break case, `InvoiceStatusQueryService`'s filter shape
+      per status, `RagService`'s computed-list and zero-results answers). 45/45 passing
+      across the touched test files.
+- [x] `npx tsc --noEmit` clean; `npm test` at 137/138 (same pre-existing, unrelated
+      missing-sample-PDF failure noted in Task 5).
+- [x] Live-verified against the real dev server, cross-checked against a direct DB query
+      (not just "the answer sounds right"): all 3 invoices are `PENDING` with only
+      Express Cargo's `dueDate` (2026-07-22) stored and in the past. "any unpaid
+      invoices?" and "get unpaid invoices" both correctly list all 3; "which invoices are
+      overdue?" correctly lists only Express Cargo; "show me paid invoices" correctly
+      returns "I couldn't find any paid invoices." All previously-verified
+      AGGREGATION/RETRIEVAL/premise-check behavior re-confirmed unchanged.
+
 ---
 
 ## Out of scope for this plan (explicit)
