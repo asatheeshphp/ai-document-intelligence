@@ -82,11 +82,24 @@ function getDistinctInvoices(results: SearchResultItem[]): SearchResultItem[] {
   return [...seen.values()];
 }
 
-function mentionsInvoice(answer: string, result: SearchResultItem): boolean {
+// Returns which literal identifier string (if any) the answer used to reference this
+// invoice, not just whether it matched -- confirmed live, this distinction matters:
+// "The total for the SuperStore computer invoices is $1,330.29" matches BOTH of
+// SuperStore's two real invoices (24938 and 27639) on the exact same vendor-name
+// string, since they're the same vendor. Counting that as "2 invoices named" (the old
+// boolean version did) wrongly triggered the multi-invoice skip meant for genuinely
+// different invoices like "Vendor One and Vendor Two" -- silently disabling
+// verification any time an answer names a vendor that owns more than one invoice.
+// Invoice number is preferred over vendor name when both would match, since it's the
+// unambiguous, never-shared identifier.
+function matchedInvoiceIdentifier(answer: string, result: SearchResultItem): string | null {
   const lowerAnswer = answer.toLowerCase();
   const vendor = result.invoice?.vendorName?.toLowerCase();
   const invoiceNumber = result.invoice?.invoiceNumber?.toLowerCase();
-  return Boolean((vendor && lowerAnswer.includes(vendor)) || (invoiceNumber && lowerAnswer.includes(invoiceNumber)));
+
+  if (invoiceNumber && lowerAnswer.includes(invoiceNumber)) return `number:${invoiceNumber}`;
+  if (vendor && lowerAnswer.includes(vendor)) return `vendor:${vendor}`;
+  return null;
 }
 
 export interface RagChatTurn {
@@ -339,13 +352,23 @@ export class RagService {
    * different and neither check cleanly applies to it, so both are skipped whenever the
    * answer can't be narrowed to a single invoice.
    *
-   * Attribution tries two ways, in order: first by whether the answer text literally
-   * names the invoice (vendor/invoice number substring) -- if that finds zero matches
-   * (the answer describes the invoice vaguely, e.g. "the computer invoices", rather
-   * than citing it), fall back to identifying it by which invoice's own text contains
-   * every significant number the answer states (see attributeInvoiceByNumbers). If the
-   * answer names 2+ invoices by text, that's left alone either way -- a genuine
-   * multi-invoice answer, not something either check should second-guess.
+   * Attribution groups matches by which literal identifier STRING the answer used
+   * (matchedInvoiceIdentifier), not by how many invoice records matched -- confirmed
+   * live, these differ whenever a vendor owns more than one invoice: "the SuperStore
+   * computer invoices" matches both of SuperStore's invoices on the same vendor-name
+   * string, which isn't the same thing as an answer naming two genuinely different
+   * invoices (e.g. "Vendor One and Vendor Two"). Three cases:
+   * - Zero distinct identifiers named (the answer describes the invoice vaguely, e.g.
+   *   "the computer invoices", never citing it): fall back to identifying it by which
+   *   invoice's own text contains every significant number the answer states, among
+   *   ALL retrieved invoices (see attributeInvoiceByNumbers).
+   * - Exactly one distinct identifier named, matching exactly one invoice record: use
+   *   it directly -- the common case.
+   * - Exactly one distinct identifier named, matching MULTIPLE invoice records (a
+   *   shared vendor): narrow to the specific one the same number-based way, but scoped
+   *   to just that vendor's own invoices rather than the full retrieved set.
+   * - Two or more distinct identifiers named: left unattributed either way -- a genuine
+   *   multi-invoice answer, not something either check should second-guess.
    *
    * 1. Premise: does the attributed invoice's own text have anything to do with what
    *    was asked? Confirmed live: "how much paid for internet 2026?" got a confident
@@ -371,17 +394,27 @@ export class RagService {
     results: SearchResultItem[]
   ): Promise<"premise" | "numeric" | null> {
     const distinctInvoices = getDistinctInvoices(results);
-    const namedByText = distinctInvoices.filter((result) => mentionsInvoice(answer, result));
     const answerNumbers = extractSignificantNumbers(answer);
+
+    const matches = distinctInvoices
+      .map((invoice) => ({ invoice, identifier: matchedInvoiceIdentifier(answer, invoice) }))
+      .filter((match): match is { invoice: SearchResultItem; identifier: string } => match.identifier !== null);
+    const distinctIdentifiers = new Set(matches.map((match) => match.identifier));
 
     let attributed: { invoice: SearchResultItem; fullText: string } | null = null;
 
-    if (namedByText.length === 1) {
-      const chunks = await this.repository.findChunksByInvoiceId(namedByText[0].invoiceId);
-      attributed = { invoice: namedByText[0], fullText: chunks.map((chunk) => chunk.text).join("\n") };
-    } else if (namedByText.length === 0 && answerNumbers.length > 0) {
+    if (distinctIdentifiers.size === 0 && answerNumbers.length > 0) {
       attributed = await this.attributeInvoiceByNumbers(answerNumbers, distinctInvoices);
+    } else if (distinctIdentifiers.size === 1) {
+      const candidates = matches.map((match) => match.invoice);
+      if (candidates.length === 1) {
+        const chunks = await this.repository.findChunksByInvoiceId(candidates[0].invoiceId);
+        attributed = { invoice: candidates[0], fullText: chunks.map((chunk) => chunk.text).join("\n") };
+      } else if (answerNumbers.length > 0) {
+        attributed = await this.attributeInvoiceByNumbers(answerNumbers, candidates);
+      }
     }
+    // distinctIdentifiers.size >= 2 leaves attributed = null -- genuine multi-invoice answer.
 
     if (!attributed) return null;
 

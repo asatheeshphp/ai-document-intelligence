@@ -446,6 +446,39 @@ prompt only).
       grand total, the "internet 2026" premise-mismatch fallback, and general search
       queries (`GST tax`, `grand total amount`) all unchanged and correct.
 
+### Task 13: Distinguish a shared vendor name from a genuine multi-invoice answer
+
+**Files:** `services/rag.service.ts`, `services/rag.service.test.ts`
+
+- [x] "summarize the total computer invoice related amount" answered *"The total for the
+      SuperStore computer invoices is $1,330.29"* -- traced precisely: the answer names
+      only "SuperStore," which is the vendor for TWO different real invoices (24938 and
+      27639). The old `mentionsInvoice` boolean check counted this as "2 invoices named"
+      and skipped verification entirely -- the exact bypass meant to protect genuine
+      multi-invoice list answers (e.g. "Vendor One and Vendor Two"), triggered instead
+      by one vendor owning more than one invoice, a normal real-world situation this
+      corpus already has.
+- [x] Fix: attribution now groups matches by which literal identifier STRING the answer
+      used (`matchedInvoiceIdentifier`, preferring invoice number over vendor name when
+      both would match), not by how many invoice records matched. A shared vendor name
+      matching multiple records is narrowed via `attributeInvoiceByNumbers`, scoped to
+      just that vendor's own invoices, instead of being treated as "multiple invoices
+      named." An answer naming 2+ genuinely distinct identifiers is still left alone,
+      preserving the original safe skip for real multi-invoice answers.
+- [x] 1 new unit test reproduces the exact shape of this bug and proves the narrowing
+      catches a real mismatch that the old logic would have wrongly skipped (a shared
+      vendor's number attributed to the wrong specific invoice for the customer asked
+      about). Existing multi-invoice-skip and single-invoice tests re-verified
+      unchanged. 23/23 passing.
+- [x] `npx tsc --noEmit` clean; `npm test` at 148/149 (same pre-existing, unrelated
+      missing-sample-PDF failure noted in Task 5).
+- [x] Live-verified against the real dev server: "What did Benjamin Farhat pay to
+      SuperStore?" (ambiguous across SuperStore's two invoices) now correctly triggers
+      the safe fallback instead of silently passing through. Re-confirmed the original
+      "computer" example is unaffected by this fix specifically (still passes, per the
+      already-documented literal-word-match limitation) and other regressions (invoice
+      27639's total, the genuine 3-invoice GST list, unpaid-invoices list) unchanged.
+
 ---
 
 ## Out of scope for this plan (explicit)

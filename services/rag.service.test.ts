@@ -606,6 +606,57 @@ describe("RagService.answer — grounding verification", () => {
     expect(result.answer).toBe("The total is 999999.");
   });
 
+  it("narrows a shared vendor name to the specific invoice instead of treating it as a multi-invoice answer", async () => {
+    // Reproduces the confirmed live bug: "The total for the SuperStore computer
+    // invoices is $1,330.29" matched BOTH of SuperStore's real invoices (24938 and
+    // 27639) on the same vendor-name string -- the old boolean mentionsInvoice() logic
+    // counted that as "2 invoices named" and skipped verification entirely, the same
+    // bypass meant for genuinely different invoices ("Vendor One and Vendor Two"). This
+    // proves the fix: the answer here names only the shared vendor (no invoice number),
+    // states a number that's real but belongs to the WRONG SuperStore invoice for the
+    // question asked, and should now be narrowed and rejected instead of skipped.
+    const searchResults = [
+      fakeSearchResult({
+        invoiceId: "inv-24938",
+        invoice: { invoiceNumber: "24938", vendorName: "SuperStore" },
+        chunkText: "Customer: Benjamin Farhat",
+      }),
+      fakeSearchResult({
+        invoiceId: "inv-27639",
+        invoice: { invoiceNumber: "27639", vendorName: "SuperStore" },
+        chunkText: "Customer: Steve Carroll",
+      }),
+    ];
+    const searchService = { search: vi.fn().mockResolvedValue({ results: searchResults }) } as unknown as SearchService;
+    const ollamaService = {
+      chatCompletion: vi.fn().mockResolvedValue("The total for the SuperStore invoice is 4148.2."),
+    } as unknown as OllamaService;
+    const spendQueryService = { getVendorSpendSummary: vi.fn() } as unknown as SpendQueryService;
+    const chatIntentService = fakeChatIntentService({ type: "RETRIEVAL" });
+    const repository = fakeRepository({
+      findChunksByInvoiceId: vi.fn().mockImplementation((invoiceId: string) => {
+        if (invoiceId === "inv-24938") {
+          return Promise.resolve([
+            { chunkType: "customer", text: "Customer: Benjamin Farhat" },
+            { chunkType: "payment", text: "Grand Total: 8589.05", _id: { toString: () => "chunk-24938-payment" } },
+          ]);
+        }
+        return Promise.resolve([
+          { chunkType: "customer", text: "Customer: Steve Carroll" },
+          { chunkType: "payment", text: "Grand Total: 4148.2", _id: { toString: () => "chunk-27639-payment" } },
+        ]);
+      }),
+    });
+
+    const service = new RagService(searchService, ollamaService, spendQueryService, chatIntentService, repository);
+    const result = await service.answer({ question: "How much did Benjamin Farhat pay?" });
+
+    // 4148.2 uniquely attributes to invoice 27639 (Steve Carroll's), not 24938
+    // (Benjamin Farhat's) -- the question asks about Farhat specifically, and "farhat"
+    // never appears in 27639's own text, so this must be rejected, not skipped.
+    expect(result.answer).toMatch(/doesn't appear to mention what you asked about/);
+  });
+
   it("rejects a premise mismatch even when the answer names the invoice, once generic payment vocabulary is excluded from the overlap check", async () => {
     // Reproduces the confirmed live bug: "summarize the electricity bill amount" named
     // a real invoice and cited its real Installation Service line ($5,000), but only
