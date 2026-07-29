@@ -1,6 +1,7 @@
 import { SearchService } from "@/services/search.service";
 import { OllamaService } from "@/services/ollama.service";
 import { SpendQueryService, type VendorSpendSummary } from "@/services/spend-query.service";
+import { ChatIntentService } from "@/services/chat-intent.service";
 import type { SearchResultItem } from "@/services/search.service";
 import type { ChatIntent } from "@/schemas/chat-intent.schema";
 
@@ -101,14 +102,14 @@ export class RagService {
   constructor(
     private readonly searchService: SearchService = new SearchService(),
     private readonly ollamaService: OllamaService = new OllamaService(),
-    private readonly spendQueryService: SpendQueryService = new SpendQueryService()
+    private readonly spendQueryService: SpendQueryService = new SpendQueryService(),
+    private readonly chatIntentService: ChatIntentService = new ChatIntentService()
   ) {}
 
   async answer(input: RagAnswerInput): Promise<RagAnswer> {
     const history = input.history ?? [];
 
-    const intentOutcome = await this.ollamaService.detectChatIntent(input.question).catch(() => null);
-    const intent = intentOutcome?.success ? intentOutcome.data : null;
+    const intent = await this.chatIntentService.detectIntent(input.question).catch(() => null);
 
     if (intent?.type === "AGGREGATION" && intent.vendor) {
       const summary = await this.spendQueryService.getVendorSpendSummary({

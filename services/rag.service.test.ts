@@ -3,6 +3,7 @@ import { RagService } from "@/services/rag.service";
 import type { SearchService, SearchResultItem } from "@/services/search.service";
 import type { OllamaService } from "@/services/ollama.service";
 import type { SpendQueryService } from "@/services/spend-query.service";
+import type { ChatIntentService } from "@/services/chat-intent.service";
 
 function fakeSearchResult(overrides: Partial<SearchResultItem> = {}): SearchResultItem {
   return {
@@ -15,16 +16,14 @@ function fakeSearchResult(overrides: Partial<SearchResultItem> = {}): SearchResu
   };
 }
 
+function fakeChatIntentService(intent: Record<string, unknown>): ChatIntentService {
+  return { detectIntent: vi.fn().mockResolvedValue(intent) } as unknown as ChatIntentService;
+}
+
 describe("RagService.answer — aggregation path", () => {
   it("answers with a computed total when intent detection finds a vendor match", async () => {
     const searchService = { search: vi.fn() } as unknown as SearchService;
-    const ollamaService = {
-      detectChatIntent: vi.fn().mockResolvedValue({
-        success: true,
-        data: { type: "AGGREGATION", vendor: "Readylink", from: "2026-01-01", to: "2026-12-31" },
-      }),
-      chatCompletion: vi.fn(),
-    } as unknown as OllamaService;
+    const ollamaService = { chatCompletion: vi.fn() } as unknown as OllamaService;
     const spendQueryService = {
       getVendorSpendSummary: vi.fn().mockResolvedValue({
         vendorNames: ["Readylink Internet Services Limited"],
@@ -33,8 +32,14 @@ describe("RagService.answer — aggregation path", () => {
         currencies: ["Rs."],
       }),
     } as unknown as SpendQueryService;
+    const chatIntentService = fakeChatIntentService({
+      type: "AGGREGATION",
+      vendor: "Readylink",
+      from: "2026-01-01",
+      to: "2026-12-31",
+    });
 
-    const service = new RagService(searchService, ollamaService, spendQueryService);
+    const service = new RagService(searchService, ollamaService, spendQueryService, chatIntentService);
     const result = await service.answer({ question: "How much have I paid Readylink this year?" });
 
     expect(result.mode).toBe("computed");
@@ -48,12 +53,7 @@ describe("RagService.answer — aggregation path", () => {
 
   it("flags a mixed-currency total instead of silently presenting one number", async () => {
     const searchService = { search: vi.fn() } as unknown as SearchService;
-    const ollamaService = {
-      detectChatIntent: vi.fn().mockResolvedValue({
-        success: true,
-        data: { type: "AGGREGATION", vendor: "SuperStore" },
-      }),
-    } as unknown as OllamaService;
+    const ollamaService = {} as unknown as OllamaService;
     const spendQueryService = {
       getVendorSpendSummary: vi.fn().mockResolvedValue({
         vendorNames: ["SuperStore"],
@@ -62,8 +62,9 @@ describe("RagService.answer — aggregation path", () => {
         currencies: ["USD", "Rs."],
       }),
     } as unknown as SpendQueryService;
+    const chatIntentService = fakeChatIntentService({ type: "AGGREGATION", vendor: "SuperStore" });
 
-    const service = new RagService(searchService, ollamaService, spendQueryService);
+    const service = new RagService(searchService, ollamaService, spendQueryService, chatIntentService);
     const result = await service.answer({ question: "What's my total spend with SuperStore?" });
 
     expect(result.mode).toBe("computed");
@@ -73,18 +74,11 @@ describe("RagService.answer — aggregation path", () => {
   it("falls through to retrieval when no vendor matched the aggregation query", async () => {
     const searchResults = [fakeSearchResult()];
     const searchService = { search: vi.fn().mockResolvedValue({ results: searchResults }) } as unknown as SearchService;
-    const ollamaService = {
-      detectChatIntent: vi.fn().mockResolvedValue({
-        success: true,
-        data: { type: "AGGREGATION", vendor: "NoSuchVendor" },
-      }),
-      chatCompletion: vi.fn().mockResolvedValue("Some retrieved answer"),
-    } as unknown as OllamaService;
-    const spendQueryService = {
-      getVendorSpendSummary: vi.fn().mockResolvedValue(null),
-    } as unknown as SpendQueryService;
+    const ollamaService = { chatCompletion: vi.fn().mockResolvedValue("Some retrieved answer") } as unknown as OllamaService;
+    const spendQueryService = { getVendorSpendSummary: vi.fn().mockResolvedValue(null) } as unknown as SpendQueryService;
+    const chatIntentService = fakeChatIntentService({ type: "AGGREGATION", vendor: "NoSuchVendor" });
 
-    const service = new RagService(searchService, ollamaService, spendQueryService);
+    const service = new RagService(searchService, ollamaService, spendQueryService, chatIntentService);
     const result = await service.answer({ question: "How much have I paid NoSuchVendor?" });
 
     expect(result.mode).toBe("retrieved");
@@ -97,13 +91,11 @@ describe("RagService.answer — retrieval path (unchanged existing behavior)", (
   it("retrieves and synthesizes an answer when intent is RETRIEVAL", async () => {
     const searchResults = [fakeSearchResult()];
     const searchService = { search: vi.fn().mockResolvedValue({ results: searchResults }) } as unknown as SearchService;
-    const ollamaService = {
-      detectChatIntent: vi.fn().mockResolvedValue({ success: true, data: { type: "RETRIEVAL" } }),
-      chatCompletion: vi.fn().mockResolvedValue("Synthesized answer"),
-    } as unknown as OllamaService;
+    const ollamaService = { chatCompletion: vi.fn().mockResolvedValue("Synthesized answer") } as unknown as OllamaService;
     const spendQueryService = { getVendorSpendSummary: vi.fn() } as unknown as SpendQueryService;
+    const chatIntentService = fakeChatIntentService({ type: "RETRIEVAL" });
 
-    const service = new RagService(searchService, ollamaService, spendQueryService);
+    const service = new RagService(searchService, ollamaService, spendQueryService, chatIntentService);
     const result = await service.answer({ question: "Which invoices mention GST?" });
 
     expect(result.mode).toBe("retrieved");
@@ -114,13 +106,11 @@ describe("RagService.answer — retrieval path (unchanged existing behavior)", (
 
   it("returns the no-context answer when retrieval finds nothing", async () => {
     const searchService = { search: vi.fn().mockResolvedValue({ results: [] }) } as unknown as SearchService;
-    const ollamaService = {
-      detectChatIntent: vi.fn().mockResolvedValue({ success: true, data: { type: "RETRIEVAL" } }),
-      chatCompletion: vi.fn(),
-    } as unknown as OllamaService;
+    const ollamaService = { chatCompletion: vi.fn() } as unknown as OllamaService;
     const spendQueryService = { getVendorSpendSummary: vi.fn() } as unknown as SpendQueryService;
+    const chatIntentService = fakeChatIntentService({ type: "RETRIEVAL" });
 
-    const service = new RagService(searchService, ollamaService, spendQueryService);
+    const service = new RagService(searchService, ollamaService, spendQueryService, chatIntentService);
     const result = await service.answer({ question: "Anything about unicorns?" });
 
     expect(result.mode).toBe("retrieved");
@@ -131,13 +121,13 @@ describe("RagService.answer — retrieval path (unchanged existing behavior)", (
   it("falls through to retrieval when intent detection itself fails (network error)", async () => {
     const searchResults = [fakeSearchResult()];
     const searchService = { search: vi.fn().mockResolvedValue({ results: searchResults }) } as unknown as SearchService;
-    const ollamaService = {
-      detectChatIntent: vi.fn().mockRejectedValue(new Error("network error")),
-      chatCompletion: vi.fn().mockResolvedValue("Synthesized answer"),
-    } as unknown as OllamaService;
+    const ollamaService = { chatCompletion: vi.fn().mockResolvedValue("Synthesized answer") } as unknown as OllamaService;
     const spendQueryService = { getVendorSpendSummary: vi.fn() } as unknown as SpendQueryService;
+    const chatIntentService = {
+      detectIntent: vi.fn().mockRejectedValue(new Error("network error")),
+    } as unknown as ChatIntentService;
 
-    const service = new RagService(searchService, ollamaService, spendQueryService);
+    const service = new RagService(searchService, ollamaService, spendQueryService, chatIntentService);
     const result = await service.answer({ question: "Which invoices mention GST?" });
 
     expect(result.mode).toBe("retrieved");

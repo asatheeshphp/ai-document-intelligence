@@ -1,0 +1,82 @@
+import { describe, it, expect, vi } from "vitest";
+import { ChatIntentService } from "@/services/chat-intent.service";
+import type { OllamaService } from "@/services/ollama.service";
+
+function fakeOllamaServiceWithSequence(
+  outcomes: Array<{ success: boolean; data: Record<string, unknown> | null }>
+): OllamaService {
+  const detectChatIntent = vi.fn();
+  for (const outcome of outcomes) {
+    detectChatIntent.mockResolvedValueOnce({ raw: "", ...outcome });
+  }
+  return { detectChatIntent } as unknown as OllamaService;
+}
+
+function fakeOllamaService(outcome: { success: boolean; data: Record<string, unknown> | null }): OllamaService {
+  return {
+    detectChatIntent: vi.fn().mockResolvedValue({ raw: "", ...outcome }),
+  } as unknown as OllamaService;
+}
+
+describe("ChatIntentService.detectIntent", () => {
+  it("returns the model's intent when every attempt agrees", async () => {
+    const ollama = fakeOllamaService({ success: true, data: { type: "AGGREGATION", vendor: "Readylink" } });
+    const service = new ChatIntentService(ollama);
+
+    const result = await service.detectIntent("How much have I paid Readylink?");
+
+    expect(result).toEqual({ type: "AGGREGATION", vendor: "Readylink" });
+    expect(ollama.detectChatIntent).toHaveBeenCalledTimes(3);
+  });
+
+  it("falls back to RETRIEVAL when every attempt fails to parse", async () => {
+    const ollama = fakeOllamaService({ success: false, data: null });
+    const service = new ChatIntentService(ollama);
+
+    const result = await service.detectIntent("some garbled question");
+
+    expect(result).toEqual({ type: "RETRIEVAL" });
+  });
+
+  it("takes the majority vote when attempts disagree (2 AGGREGATION vs 1 RETRIEVAL)", async () => {
+    // Mirrors the confirmed live failure mode: "How much have I paid Express Cargo?"
+    // was classified RETRIEVAL on one attempt despite being phrased identically to a
+    // question that correctly classified as AGGREGATION on other attempts.
+    const ollama = fakeOllamaServiceWithSequence([
+      { success: true, data: { type: "AGGREGATION", vendor: "Express Cargo" } },
+      { success: true, data: { type: "RETRIEVAL" } },
+      { success: true, data: { type: "AGGREGATION", vendor: "Express Cargo" } },
+    ]);
+    const service = new ChatIntentService(ollama);
+
+    const result = await service.detectIntent("How much have I paid Express Cargo?");
+
+    expect(result).toEqual({ type: "AGGREGATION", vendor: "Express Cargo" });
+  });
+
+  it("takes the majority vote the other way (1 AGGREGATION vs 2 RETRIEVAL)", async () => {
+    const ollama = fakeOllamaServiceWithSequence([
+      { success: true, data: { type: "AGGREGATION", vendor: "Readylink" } },
+      { success: true, data: { type: "RETRIEVAL" } },
+      { success: true, data: { type: "RETRIEVAL" } },
+    ]);
+    const service = new ChatIntentService(ollama);
+
+    const result = await service.detectIntent("What did the Readylink invoice say?");
+
+    expect(result).toEqual({ type: "RETRIEVAL" });
+  });
+
+  it("counts a failed individual attempt as a RETRIEVAL vote rather than aborting", async () => {
+    const ollama = fakeOllamaServiceWithSequence([
+      { success: true, data: { type: "AGGREGATION", vendor: "SuperStore" } },
+      { success: false, data: null },
+      { success: true, data: { type: "AGGREGATION", vendor: "SuperStore" } },
+    ]);
+    const service = new ChatIntentService(ollama);
+
+    const result = await service.detectIntent("What's my total spend with SuperStore?");
+
+    expect(result).toEqual({ type: "AGGREGATION", vendor: "SuperStore" });
+  });
+});

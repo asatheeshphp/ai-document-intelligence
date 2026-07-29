@@ -206,6 +206,10 @@ If AGGREGATION, also extract the vendor name (as mentioned in the question, not
 necessarily the full legal name) and, if a time period is mentioned, a from/to date
 range in YYYY-MM-DD format. Do not invent a date range if none is mentioned.
 
+Copy the vendor name EXACTLY as it appears in the question, character for character,
+including every space between words -- do not join, split, or otherwise alter the
+spelling. For example, "Express Cargo" must stay "Express Cargo", not "ExpressCargo".
+
 Return ONLY one line in exactly one of these formats:
 
 ANSWER: AGGREGATION vendor="<vendor name>" from=<YYYY-MM-DD> to=<YYYY-MM-DD>
