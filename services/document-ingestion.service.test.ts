@@ -23,7 +23,6 @@ function fakeRepository(overrides: Record<string, unknown> = {}): ProcessingRepo
     deleteInvoicesByDocumentId: vi.fn().mockResolvedValue(undefined),
     deleteExtractionsByDocumentId: vi.fn().mockResolvedValue(undefined),
     deleteDocumentById: vi.fn().mockResolvedValue(undefined),
-    deleteEmailById: vi.fn().mockResolvedValue(undefined),
     createEmail: vi.fn().mockResolvedValue({ _id: new Types.ObjectId() }),
     upsertDocumentBySourcePath: vi.fn().mockResolvedValue({ document: { _id: new Types.ObjectId() }, isNew: true }),
     updateDocumentStatus: vi.fn().mockResolvedValue(undefined),
@@ -282,7 +281,6 @@ describe("DocumentIngestionService.processLocalDocument — duplicate invoice ch
     // Nothing is deleted -- a human decides via processDuplicateAnyway or the existing
     // DELETE /api/documents/:id endpoint. The document is marked, not discarded.
     expect(repository.deleteDocumentById).not.toHaveBeenCalled();
-    expect(repository.deleteEmailById).not.toHaveBeenCalled();
     expect(repository.deleteExtractionsByDocumentId).not.toHaveBeenCalled();
     expect(repository.updateDocumentStatus).toHaveBeenCalledWith(
       existingDocumentId,
