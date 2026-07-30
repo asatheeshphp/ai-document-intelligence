@@ -553,6 +553,16 @@ export class RagService {
    * Re-verifies the retry the same way as the original answer -- if the narrower context
    * STILL doesn't ground it (e.g. a numeric mismatch), returns null so the caller falls
    * through to the original fallback message rather than trusting an unverified retry.
+   *
+   * Passes the FULL original `augmentedResults` (not just this invoice's own chunks) as
+   * checkAnswerGrounding's separate `knownInvoiceResults` argument -- otherwise, in a
+   * multi-turn conversation where a prior turn already named the ORIGINAL (wrongly-
+   * attributed) invoice's number, the retry answer referencing that number again would
+   * get wrongly vetoed as a "fabricated identifier": it's a real invoice number, just not
+   * one that exists in this narrowed single-invoice context. The premise/numeric checks
+   * still correctly narrow to just this invoice's own text; only the identifier check's
+   * "is this a real invoice number at all" reference set stays as broad as the original
+   * search turned up.
    */
   private async answerFromSingleInvoice(
     question: string,
@@ -566,7 +576,7 @@ export class RagService {
     const prompt = buildGroundedPrompt(question, history, invoiceResults);
     const answer = await this.ollamaService.chatCompletion(prompt);
 
-    const verification = await this.checkAnswerGrounding(question, answer, invoiceResults);
+    const verification = await this.checkAnswerGrounding(question, answer, invoiceResults, augmentedResults);
     if (verification.type) return null;
 
     return { answer, sources: invoiceResults, mode: "retrieved" };
@@ -655,12 +665,16 @@ export class RagService {
   private async checkAnswerGrounding(
     question: string,
     answer: string,
-    results: SearchResultItem[]
+    results: SearchResultItem[],
+    // Defaults to `results` -- the normal (non-retry) case checks fabricated identifiers
+    // against the same set it attributes/verifies against. The single-invoice retry path
+    // passes a broader set here on purpose; see answerFromSingleInvoice's comment.
+    knownInvoiceResults: SearchResultItem[] = results
   ): Promise<{ type: "premise" | "numeric" | "identifier" | null; retryInvoice?: SearchResultItem }> {
     const distinctInvoices = getDistinctInvoices(results);
 
     const realInvoiceNumbers = new Set(
-      distinctInvoices
+      getDistinctInvoices(knownInvoiceResults)
         .map((invoice) => invoice.invoice?.invoiceNumber?.toLowerCase())
         .filter((invoiceNumber): invoiceNumber is string => Boolean(invoiceNumber))
     );
