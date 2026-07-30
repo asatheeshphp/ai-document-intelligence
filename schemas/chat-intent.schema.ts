@@ -11,7 +11,11 @@ export const ChatIntentSchema = z.object({
   // Only set for STATUS_FILTER -- mirrors the paymentStatus/dueDate filter shape
   // app/api/invoices/due/route.ts already queries with, so a chat question like "any
   // unpaid invoices?" resolves to the exact same data that page's UI already surfaces.
-  status: z.enum(["PAID", "UNPAID", "OVERDUE"]).optional(),
+  status: z.enum(["PAID", "UNPAID", "OVERDUE", "UPCOMING"]).optional(),
+  // Only set when status=UPCOMING -- the "N" in "due within/next N days". Mirrors the
+  // OVERDUE filter's dueDate comparison but bounded on both ends (today..today+N) instead
+  // of open-ended in the past.
+  dueWithinDays: z.coerce.number().int().positive().optional(),
   // Only set for STATUS_FILTER when the question names one specific invoice by number
   // (e.g. "what is the payment status of EXL-2026-2048?"). Confirmed live: without
   // this, "status of invoice X" questions ran the SAME blanket "list every PAID

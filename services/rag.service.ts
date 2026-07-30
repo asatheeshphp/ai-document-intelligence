@@ -213,16 +213,20 @@ function formatSpendAnswer(summary: VendorSpendSummary, intent: ChatIntent): str
   return base;
 }
 
-const STATUS_FILTER_LABELS: Record<"PAID" | "UNPAID" | "OVERDUE", string> = {
+const STATUS_FILTER_LABELS: Record<"PAID" | "UNPAID" | "OVERDUE" | "UPCOMING", string> = {
   PAID: "paid",
   UNPAID: "unpaid",
   OVERDUE: "overdue",
+  UPCOMING: "upcoming",
 };
 
 // Fixed string template, deliberately NOT an LLM call -- same reasoning as
 // formatSpendAnswer: the list of invoices and their fields comes straight from
 // InvoiceStatusQueryService/MongoDB, never touched by the model.
-function formatStatusFilterAnswer(invoices: InvoiceStatusSummaryItem[], status: "PAID" | "UNPAID" | "OVERDUE"): string {
+function formatStatusFilterAnswer(
+  invoices: InvoiceStatusSummaryItem[],
+  status: "PAID" | "UNPAID" | "OVERDUE" | "UPCOMING"
+): string {
   const label = STATUS_FILTER_LABELS[status];
 
   if (invoices.length === 0) {
@@ -341,7 +345,7 @@ export class RagService {
       // slightly wrong" ambiguity to fall through on, so this always answers directly,
       // including the zero-results case ("I couldn't find any unpaid invoices" is
       // itself a real, useful answer, not a failure to dead-end from).
-      const invoices = await this.invoiceStatusQueryService.listByStatus(intent.status);
+      const invoices = await this.invoiceStatusQueryService.listByStatus(intent.status, intent.dueWithinDays);
       return { answer: formatStatusFilterAnswer(invoices, intent.status), sources: [], mode: "computed" };
     }
 
@@ -402,11 +406,26 @@ export class RagService {
     const answer = await this.ollamaService.chatCompletion(prompt);
 
     const groundingFailure = await this.checkAnswerGrounding(input.question, answer, augmentedResults);
-    if (groundingFailure) {
+    if (groundingFailure.type) {
+      // Confirmed live: a short, generic query (e.g. a single name, "satheesh") often
+      // retrieves several loosely-related invoices, and the model attributes its answer
+      // to the WRONG one among them -- the premise check correctly rejects that wrong
+      // pick, but the right invoice (which genuinely does mention the query's subject)
+      // was sitting right there in the same retrieved set the whole time. Rather than
+      // just rejecting, re-answer scoped to that other invoice's own chunks -- only when
+      // findAlternativeGroundedInvoice found exactly one unambiguous alternative (see its
+      // own comment for why "more than one" is left alone). Every other failure mode
+      // (numeric mismatch, fabricated identifier, or premise mismatch with no safe
+      // alternative) falls through to today's unchanged fallback message.
+      if (groundingFailure.type === "premise" && groundingFailure.retryInvoice) {
+        const retryAnswer = await this.answerFromSingleInvoice(input.question, history, augmentedResults, groundingFailure.retryInvoice);
+        if (retryAnswer) return retryAnswer;
+      }
+
       const fallback =
-        groundingFailure === "premise"
+        groundingFailure.type === "premise"
           ? PREMISE_MISMATCH_FALLBACK
-          : groundingFailure === "identifier"
+          : groundingFailure.type === "identifier"
             ? FABRICATED_IDENTIFIER_FALLBACK
             : UNGROUNDED_ANSWER_FALLBACK;
       return { answer: fallback, sources: augmentedResults, mode: "retrieved" };
@@ -526,6 +545,64 @@ export class RagService {
   }
 
   /**
+   * Re-answers a question scoped to ONE specific invoice's own already-retrieved chunks
+   * (never a fresh search), used only as the premise-mismatch retry above -- narrowing
+   * context to a single invoice already confirmed to share the question's vocabulary
+   * removes the cross-invoice ambiguity that caused the original wrong attribution,
+   * without changing anything about how the initial retrieval/generation pass works.
+   * Re-verifies the retry the same way as the original answer -- if the narrower context
+   * STILL doesn't ground it (e.g. a numeric mismatch), returns null so the caller falls
+   * through to the original fallback message rather than trusting an unverified retry.
+   */
+  private async answerFromSingleInvoice(
+    question: string,
+    history: RagChatTurn[],
+    augmentedResults: SearchResultItem[],
+    invoice: SearchResultItem
+  ): Promise<RagAnswer | null> {
+    const invoiceResults = augmentedResults.filter((result) => result.invoiceId === invoice.invoiceId);
+    if (invoiceResults.length === 0) return null;
+
+    const prompt = buildGroundedPrompt(question, history, invoiceResults);
+    const answer = await this.ollamaService.chatCompletion(prompt);
+
+    const verification = await this.checkAnswerGrounding(question, answer, invoiceResults);
+    if (verification.type) return null;
+
+    return { answer, sources: invoiceResults, mode: "retrieved" };
+  }
+
+  /**
+   * Finds the single OTHER distinct invoice (besides the one the model wrongly
+   * attributed its answer to) whose own text shares vocabulary with the question --
+   * the same signal questionSharesVocabularyWith already uses to REJECT a wrong
+   * attribution, reused here to find a right one sitting in the same retrieved set.
+   * Only trusted when EXACTLY ONE alternative invoice qualifies: zero means there's
+   * nothing safer to fall back to than today's rejection, and more than one would just
+   * be guessing among several plausible invoices -- the same ambiguity the premise
+   * check exists to catch, not resolve.
+   */
+  private async findAlternativeGroundedInvoice(
+    question: string,
+    distinctInvoices: SearchResultItem[],
+    excludeInvoiceId: string
+  ): Promise<SearchResultItem | null> {
+    const grounded: SearchResultItem[] = [];
+
+    for (const candidate of distinctInvoices) {
+      if (candidate.invoiceId === excludeInvoiceId) continue;
+
+      const chunks = await this.repository.findChunksByInvoiceId(candidate.invoiceId);
+      const fullText = chunks.map((chunk) => chunk.text).join("\n");
+      if (questionSharesVocabularyWith(question, fullText)) {
+        grounded.push(candidate);
+      }
+    }
+
+    return grounded.length === 1 ? grounded[0] : null;
+  }
+
+  /**
    * Verifies an answer that's attributable to exactly one invoice two ways -- a
    * multi-invoice list-style answer (e.g. "3 invoices mention GST") is structurally
    * different and neither check cleanly applies to it, so both are skipped whenever the
@@ -579,7 +656,7 @@ export class RagService {
     question: string,
     answer: string,
     results: SearchResultItem[]
-  ): Promise<"premise" | "numeric" | "identifier" | null> {
+  ): Promise<{ type: "premise" | "numeric" | "identifier" | null; retryInvoice?: SearchResultItem }> {
     const distinctInvoices = getDistinctInvoices(results);
 
     const realInvoiceNumbers = new Set(
@@ -591,7 +668,7 @@ export class RagService {
     const hasFabricatedIdentifier = candidateIdentifiers.some(
       (candidate) => !realInvoiceNumbers.has(candidate.toLowerCase())
     );
-    if (hasFabricatedIdentifier) return "identifier";
+    if (hasFabricatedIdentifier) return { type: "identifier" };
 
     const answerNumbers = extractSignificantNumbers(answer);
 
@@ -615,19 +692,22 @@ export class RagService {
     }
     // distinctIdentifiers.size >= 2 leaves attributed = null -- genuine multi-invoice answer.
 
-    if (!attributed) return null;
+    if (!attributed) return { type: null };
 
     const { fullText } = attributed;
 
     if (PLAIN_ASCII_PATTERN.test(question) && hasMeaningfulTokens(question)) {
-      if (!questionSharesVocabularyWith(question, fullText)) return "premise";
+      if (!questionSharesVocabularyWith(question, fullText)) {
+        const retryInvoice = await this.findAlternativeGroundedInvoice(question, distinctInvoices, attributed.invoice.invoiceId);
+        return { type: "premise", retryInvoice: retryInvoice ?? undefined };
+      }
     }
 
-    if (answerNumbers.length === 0) return null;
+    if (answerNumbers.length === 0) return { type: null };
 
     const contextNumbers = new Set(extractSignificantNumbers(fullText));
-    if (!answerNumbers.every((number) => contextNumbers.has(number))) return "numeric";
+    if (!answerNumbers.every((number) => contextNumbers.has(number))) return { type: "numeric" };
 
-    return null;
+    return { type: null };
   }
 }

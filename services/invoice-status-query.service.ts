@@ -1,7 +1,7 @@
 import { ProcessingRepository } from "@/repositories/processing.repository";
 import type { IInvoice } from "@/models/invoice.model";
 
-export type InvoiceStatusFilter = "PAID" | "UNPAID" | "OVERDUE";
+export type InvoiceStatusFilter = "PAID" | "UNPAID" | "OVERDUE" | "UPCOMING";
 
 export interface InvoiceStatusSummaryItem {
   invoiceNumber?: string;
@@ -23,8 +23,8 @@ function escapeRegExp(value: string): string {
 export class InvoiceStatusQueryService {
   constructor(private readonly repository: ProcessingRepository = new ProcessingRepository()) {}
 
-  async listByStatus(status: InvoiceStatusFilter): Promise<InvoiceStatusSummaryItem[]> {
-    const invoices = await this.repository.listInvoices(this.buildFilter(status));
+  async listByStatus(status: InvoiceStatusFilter, dueWithinDays?: number): Promise<InvoiceStatusSummaryItem[]> {
+    const invoices = await this.repository.listInvoices(this.buildFilter(status, dueWithinDays));
     return invoices.map((invoice) => this.toSummaryItem(invoice));
   }
 
@@ -53,12 +53,20 @@ export class InvoiceStatusQueryService {
   // Mirrors app/api/invoices/due/route.ts's existing filter exactly, so a chat question
   // like "any unpaid invoices?" resolves to the same data that page's UI already
   // surfaces, rather than a second, possibly-diverging definition of "unpaid."
-  private buildFilter(status: InvoiceStatusFilter): Record<string, unknown> {
+  private buildFilter(status: InvoiceStatusFilter, dueWithinDays?: number): Record<string, unknown> {
     switch (status) {
       case "PAID":
         return { paymentStatus: "PAID" };
       case "OVERDUE":
         return { paymentStatus: { $ne: "PAID" }, dueDate: { $ne: null, $lt: new Date() } };
+      case "UPCOMING": {
+        // Bounded window (today..today+N days), unlike OVERDUE's open-ended "< now" --
+        // "upcoming" means not-yet-due-but-due-soon, not "any unpaid invoice ever."
+        // Falls back to 7 days if the question didn't name a number.
+        const now = new Date();
+        const horizon = new Date(now.getTime() + (dueWithinDays ?? 7) * 24 * 60 * 60 * 1000);
+        return { paymentStatus: { $ne: "PAID" }, dueDate: { $ne: null, $gte: now, $lte: horizon } };
+      }
       case "UNPAID":
       default:
         // Not PAID (rather than strictly PENDING) -- invoices created before this field
