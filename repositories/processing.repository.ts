@@ -61,6 +61,24 @@ export interface CreateInvoiceInput {
   metadata?: Record<string, unknown>;
 }
 
+export interface DashboardLineItemRow {
+  description: string;
+  amount: number;
+}
+
+export interface DashboardInvoiceRow {
+  invoiceId: string;
+  vendorName: string | null;
+  currency: string | null;
+  totalAmount: number | null;
+  subtotal: number | null;
+  taxAmount: number | null;
+  discount: number | null;
+  shippingCharge: number | null;
+  invoiceDate: Date | null;
+  lineItems: DashboardLineItemRow[];
+}
+
 export interface CreateEmbeddingInput {
   invoiceId: Types.ObjectId | string;
   documentId: Types.ObjectId | string;
@@ -568,6 +586,41 @@ export class ProcessingRepository extends BaseRepository<unknown> {
   async listInvoices(filter: Record<string, unknown> = {}): Promise<IInvoice[]> {
     return this.withConnection(async () => {
       return Invoice.find(filter).sort({ createdAt: -1 }).exec();
+    });
+  }
+
+  // Returns one flat row per invoice with everything the business dashboard's widgets
+  // need (vendor, currency, totals, and its own line items) -- fetched once so
+  // DashboardAnalyticsService's pure grouping functions (monthly trend, vendor
+  // comparison, charge distribution, line-item grouping) can all run in plain
+  // TypeScript against the same in-memory dataset, rather than six separate Mongo
+  // aggregation pipelines.
+  async listInvoicesForDashboard(): Promise<DashboardInvoiceRow[]> {
+    return this.withConnection(async () => {
+      const invoices = await Invoice.find({}).exec();
+
+      return invoices.map((invoice) => {
+        const extractedData = invoice.extractedData as
+          | { totals?: { discount?: number | null; shippingCharge?: number | null }; lineItems?: Array<{ description?: string | null; amount?: number | null }> }
+          | undefined;
+
+        const lineItems = (extractedData?.lineItems ?? [])
+          .filter((item): item is { description: string; amount: number } => Boolean(item?.description) && typeof item?.amount === "number")
+          .map((item) => ({ description: item.description, amount: item.amount }));
+
+        return {
+          invoiceId: invoice._id.toString(),
+          vendorName: invoice.vendorName ?? null,
+          currency: invoice.currency ?? null,
+          totalAmount: invoice.totalAmount ?? null,
+          subtotal: invoice.subtotal ?? null,
+          taxAmount: invoice.taxAmount ?? null,
+          discount: extractedData?.totals?.discount ?? null,
+          shippingCharge: extractedData?.totals?.shippingCharge ?? null,
+          invoiceDate: invoice.invoiceDate ?? null,
+          lineItems,
+        };
+      });
     });
   }
 
