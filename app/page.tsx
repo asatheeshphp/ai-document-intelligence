@@ -1,47 +1,43 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { StatCard } from "@/components/StatCard";
+import { KpiStrip } from "@/components/dashboard/KpiStrip";
+import { MonthlySpendTrendChart } from "@/components/dashboard/MonthlySpendTrendChart";
+import { VendorComparisonChart } from "@/components/dashboard/VendorComparisonChart";
+import { ChargeDistributionChart } from "@/components/dashboard/ChargeDistributionChart";
+import { ServiceCostAnalysisChart } from "@/components/dashboard/ServiceCostAnalysisChart";
+import { TopRecurringExpensesList } from "@/components/dashboard/TopRecurringExpensesList";
 import { PaymentsDueList } from "@/components/PaymentsDueList";
-
-interface DashboardStats {
-  totalDocuments: number;
-  totalInvoices: number;
-  totalChunks: number;
-  totalEmbeddings: number;
-  averageChunksPerDocument: number;
-  processingSuccessCount: number;
-  failedProcessingCount: number;
-}
+import type { DashboardBusinessData } from "@/services/dashboard-analytics.service";
 
 export default function DashboardPage() {
-  const [stats, setStats] = useState<DashboardStats | null>(null);
+  const [data, setData] = useState<DashboardBusinessData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
 
-    async function loadStats() {
+    async function loadData() {
       setLoading(true);
       setError(null);
       try {
-        const response = await fetch("/api/dashboard/stats");
-        const data = await response.json();
-        if (!data.success) {
-          throw new Error(data.error ?? "Failed to load dashboard stats");
+        const response = await fetch("/api/dashboard/business");
+        const json = await response.json();
+        if (!json.success) {
+          throw new Error(json.error ?? "Failed to load dashboard data");
         }
-        if (!cancelled) setStats(data.stats);
+        if (!cancelled) setData(json.data);
       } catch (err) {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : "Failed to load dashboard stats");
+          setError(err instanceof Error ? err.message : "Failed to load dashboard data");
         }
       } finally {
         if (!cancelled) setLoading(false);
       }
     }
 
-    loadStats();
+    loadData();
     return () => {
       cancelled = true;
     };
@@ -51,53 +47,41 @@ export default function DashboardPage() {
     <div className="mx-auto max-w-6xl px-6 py-10">
       <h1 className="text-2xl font-semibold text-zinc-900 dark:text-zinc-50">Dashboard</h1>
       <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-        Overview of indexed invoices and processing health.
+        Spending overview computed from your indexed invoices.
       </p>
 
       {loading && (
         <div className="mt-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          {Array.from({ length: 7 }).map((_, index) => (
-            <div
-              key={index}
-              className="h-24 animate-pulse rounded-xl bg-zinc-200 dark:bg-zinc-800"
-            />
+          {Array.from({ length: 4 }).map((_, index) => (
+            <div key={index} className="h-24 animate-pulse rounded-xl bg-zinc-200 dark:bg-zinc-800" />
           ))}
         </div>
       )}
 
       {!loading && error && (
         <div className="mt-8 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-400">
-          Failed to load dashboard stats: {error}
+          Failed to load dashboard data: {error}
         </div>
       )}
 
-      {!loading && !error && stats && (
+      {!loading && !error && data && (
         <>
-          {stats.totalDocuments === 0 && (
-            <div className="mt-8 rounded-lg border border-zinc-200 bg-white p-4 text-sm text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400">
-              No documents indexed yet. Ingest an invoice to see stats here.
-            </div>
-          )}
+          <div className="mt-8">
+            <KpiStrip kpi={data.kpi} />
+          </div>
 
-          <div className="mt-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <StatCard label="Total Documents" value={stats.totalDocuments} />
-            <StatCard label="Total Invoices" value={stats.totalInvoices} />
-            <StatCard label="Total Chunks" value={stats.totalChunks} />
-            <StatCard label="Total Embeddings" value={stats.totalEmbeddings} />
-            <StatCard
-              label="Avg Chunks / Document"
-              value={stats.averageChunksPerDocument.toFixed(1)}
-            />
-            <StatCard
-              label="Processing Success"
-              value={stats.processingSuccessCount}
-              accent="success"
-            />
-            <StatCard
-              label="Failed Processing"
-              value={stats.failedProcessingCount}
-              accent="danger"
-            />
+          <div className="mt-8">
+            <MonthlySpendTrendChart data={data.monthlyTrend} />
+          </div>
+
+          <div className="mt-8 grid grid-cols-1 gap-4 lg:grid-cols-2">
+            <VendorComparisonChart data={data.vendorComparison} />
+            <ChargeDistributionChart data={data.chargeDistribution} />
+          </div>
+
+          <div className="mt-8 grid grid-cols-1 gap-4 lg:grid-cols-2">
+            <TopRecurringExpensesList data={data.topRecurringExpenses} />
+            <ServiceCostAnalysisChart data={data.serviceCostAnalysis} />
           </div>
 
           <PaymentsDueList />
