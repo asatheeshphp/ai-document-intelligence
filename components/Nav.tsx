@@ -45,7 +45,7 @@ export function Nav() {
 
           <Link
             href="/system"
-            className="text-xs font-medium text-zinc-400 transition-colors hover:text-zinc-600 dark:text-zinc-500 dark:hover:text-zinc-300"
+            className="text-xs font-medium text-zinc-500 transition-colors hover:text-zinc-600 dark:text-zinc-500 dark:hover:text-zinc-300"
           >
             System Health
           </Link>
