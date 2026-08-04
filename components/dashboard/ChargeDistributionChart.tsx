@@ -10,6 +10,17 @@ const SLICE_COLORS: Record<string, string> = {
   Shipping: "#A78BFA",
 };
 
+// Confirmed live: summing many invoices' tax/subtotal/shipping fields (plain JS
+// floating-point addition) produces artifacts like 9942.519999999999 -- correct to the
+// cent, but unpresentable raw. The default Tooltip renders the raw number verbatim, so
+// this formats it the same way every other currency figure on the dashboard already is
+// (fixed 2 decimal places).
+function formatTooltipValue(value: number | string | readonly (number | string)[] | undefined): string {
+  return typeof value === "number"
+    ? value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    : String(value ?? "");
+}
+
 export function ChargeDistributionChart({ data }: { data: ChargeDistribution }) {
   const slices = [
     { name: "Subtotal", value: data.subtotal },
@@ -33,7 +44,7 @@ export function ChargeDistributionChart({ data }: { data: ChargeDistribution }) 
                 ))}
               </Pie>
               <Legend verticalAlign="bottom" height={24} />
-              <Tooltip />
+              <Tooltip formatter={formatTooltipValue} />
             </PieChart>
           </ResponsiveContainer>
         </div>
