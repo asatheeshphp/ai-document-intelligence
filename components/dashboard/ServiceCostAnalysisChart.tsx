@@ -4,7 +4,12 @@ import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxi
 import type { LineItemGroupResult } from "@/services/dashboard-analytics.service";
 
 const SERVICE_INDIGO = "#6366F1";
-const MAX_LABEL_CHARS = 20;
+// Confirmed live: at width=140/fontSize=12, Recharts still word-wraps a category label
+// onto 2 lines once it exceeds roughly 16-17 characters (average glyph width, not a
+// hard character count) -- the earlier 20-char limit was still wide enough to wrap for
+// several real descriptions, producing uneven, ellipsis-mid-wrap labels. 16 keeps the
+// truncated label reliably on one line at this width/font size.
+const MAX_LABEL_CHARS = 16;
 
 // Confirmed live: real line-item descriptions (e.g. "Transportation Coimbatore →
 // Chennai (12 Tons)") wrap to 2-3 lines at the fixed YAxis width, and with several
@@ -15,6 +20,10 @@ const MAX_LABEL_CHARS = 20;
 // again.
 function truncateLabel(value: string): string {
   return value.length > MAX_LABEL_CHARS ? `${value.slice(0, MAX_LABEL_CHARS - 1)}…` : value;
+}
+
+function formatAxisAmount(value: number): string {
+  return value.toLocaleString();
 }
 
 export function ServiceCostAnalysisChart({ data }: { data: LineItemGroupResult[] }) {
@@ -28,7 +37,7 @@ export function ServiceCostAnalysisChart({ data }: { data: LineItemGroupResult[]
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={data} layout="vertical" margin={{ left: 24 }}>
               <CartesianGrid strokeDasharray="3 3" horizontal={false} />
-              <XAxis type="number" tick={{ fontSize: 12 }} stroke="#a1a1aa" />
+              <XAxis type="number" tick={{ fontSize: 12 }} stroke="#a1a1aa" tickFormatter={formatAxisAmount} />
               <YAxis
                 dataKey="description"
                 type="category"
