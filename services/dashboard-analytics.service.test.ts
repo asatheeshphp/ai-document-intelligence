@@ -1,12 +1,15 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   buildMonthlyTrend,
   buildVendorComparison,
   buildChargeDistribution,
   buildServiceCostAnalysis,
   buildTopRecurringExpenses,
+  DashboardAnalyticsService,
   type DashboardInvoiceRow,
 } from "@/services/dashboard-analytics.service";
+import type { ProcessingRepository } from "@/repositories/processing.repository";
+import type { InvoiceStatusQueryService } from "@/services/invoice-status-query.service";
 
 function row(overrides: Partial<DashboardInvoiceRow> = {}): DashboardInvoiceRow {
   return {
@@ -203,5 +206,57 @@ describe("buildServiceCostAnalysis and buildTopRecurringExpenses", () => {
     const result = buildServiceCostAnalysis(rows, 8);
 
     expect(result).toEqual([{ description: "Widget", amount: 30, currency: "INR", invoiceCount: 1, excludedCount: 0 }]);
+  });
+});
+
+describe("DashboardAnalyticsService.getBusinessDashboardData", () => {
+  function fakeRepository(rows: DashboardInvoiceRow[]): ProcessingRepository {
+    return { listInvoicesForDashboard: vi.fn().mockResolvedValue(rows) } as unknown as ProcessingRepository;
+  }
+
+  function fakeStatusService(overdue: unknown[], dueSoon: unknown[]): InvoiceStatusQueryService {
+    return {
+      listByStatus: vi.fn().mockImplementation((status: string) => Promise.resolve(status === "OVERDUE" ? overdue : dueSoon)),
+    } as unknown as InvoiceStatusQueryService;
+  }
+
+  it("computes total spend YTD, average invoice value, and overdue/due-soon KPIs", async () => {
+    const now = new Date("2026-07-30T00:00:00Z");
+    const rows = [
+      row({ invoiceId: "a", invoiceDate: new Date("2026-01-15T00:00:00Z"), totalAmount: 100 }),
+      row({ invoiceId: "b", invoiceDate: new Date("2025-12-01T00:00:00Z"), totalAmount: 900 }),
+    ];
+    const overdue = [{ totalAmount: 50, currency: "INR" }];
+    const dueSoon = [{ totalAmount: 75, currency: "INR" }];
+
+    const service = new DashboardAnalyticsService(fakeRepository(rows), fakeStatusService(overdue, dueSoon));
+    const result = await service.getBusinessDashboardData(now);
+
+    expect(result.kpi.totalSpend).toEqual({ amount: 100, currency: "INR", excludedCount: 0 });
+    expect(result.kpi.avgInvoiceValue).toEqual({ amount: 500, currency: "INR", excludedCount: 0, invoiceCount: 2 });
+    expect(result.kpi.overdueAmount).toEqual({ amount: 50, currency: "INR", excludedCount: 0 });
+    expect(result.kpi.dueSoonAmount).toEqual({ amount: 75, currency: "INR", excludedCount: 0 });
+  });
+
+  it("includes all six widget payloads in the result", async () => {
+    const service = new DashboardAnalyticsService(fakeRepository([]), fakeStatusService([], []));
+    const result = await service.getBusinessDashboardData(new Date("2026-07-30T00:00:00Z"));
+
+    expect(result).toHaveProperty("kpi");
+    expect(result).toHaveProperty("monthlyTrend");
+    expect(result).toHaveProperty("vendorComparison");
+    expect(result).toHaveProperty("chargeDistribution");
+    expect(result).toHaveProperty("serviceCostAnalysis");
+    expect(result).toHaveProperty("topRecurringExpenses");
+  });
+
+  it("requests OVERDUE and UPCOMING-30-day status filters", async () => {
+    const statusService = fakeStatusService([], []);
+    const service = new DashboardAnalyticsService(fakeRepository([]), statusService);
+
+    await service.getBusinessDashboardData(new Date("2026-07-30T00:00:00Z"));
+
+    expect(statusService.listByStatus).toHaveBeenCalledWith("OVERDUE");
+    expect(statusService.listByStatus).toHaveBeenCalledWith("UPCOMING", 30);
   });
 });

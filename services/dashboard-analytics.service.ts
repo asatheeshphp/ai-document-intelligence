@@ -1,7 +1,13 @@
-import type { DashboardInvoiceRow } from "@/repositories/processing.repository";
+import { ProcessingRepository, type DashboardInvoiceRow } from "@/repositories/processing.repository";
+import { InvoiceStatusQueryService } from "@/services/invoice-status-query.service";
 import { summarizeByCurrency } from "@/utils/currency-aggregate";
 
 export type { DashboardInvoiceRow };
+
+const DEFAULT_TREND_MONTHS = 12;
+const DEFAULT_VENDOR_TOP_N = 8;
+const DEFAULT_SERVICE_TOP_N = 8;
+const DEFAULT_RECURRING_TOP_N = 5;
 
 export interface MonthlyTrendPoint {
   label: string;
@@ -160,4 +166,76 @@ export function buildTopRecurringExpenses(rows: DashboardInvoiceRow[], topN: num
     .filter((group) => group.invoiceCount >= MIN_RECURRING_INVOICE_COUNT)
     .sort((a, b) => b.amount - a.amount)
     .slice(0, topN);
+}
+
+export interface CurrencyAmountSummary {
+  amount: number;
+  currency: string | null;
+  excludedCount: number;
+}
+
+export interface KpiSummary {
+  totalSpend: CurrencyAmountSummary;
+  avgInvoiceValue: CurrencyAmountSummary & { invoiceCount: number };
+  overdueAmount: CurrencyAmountSummary;
+  dueSoonAmount: CurrencyAmountSummary;
+}
+
+export interface DashboardBusinessData {
+  kpi: KpiSummary;
+  monthlyTrend: MonthlyTrendPoint[];
+  vendorComparison: VendorComparisonEntry[];
+  chargeDistribution: ChargeDistribution;
+  serviceCostAnalysis: LineItemGroupResult[];
+  topRecurringExpenses: LineItemGroupResult[];
+}
+
+export class DashboardAnalyticsService {
+  constructor(
+    private readonly repository: ProcessingRepository = new ProcessingRepository(),
+    private readonly invoiceStatusQueryService: InvoiceStatusQueryService = new InvoiceStatusQueryService()
+  ) {}
+
+  async getBusinessDashboardData(now: Date = new Date()): Promise<DashboardBusinessData> {
+    const [rows, overdueInvoices, dueSoonInvoices] = await Promise.all([
+      this.repository.listInvoicesForDashboard(),
+      this.invoiceStatusQueryService.listByStatus("OVERDUE"),
+      this.invoiceStatusQueryService.listByStatus("UPCOMING", 30),
+    ]);
+
+    const startOfYear = new Date(Date.UTC(now.getUTCFullYear(), 0, 1));
+    const ytdRows = rows
+      .filter((row) => row.invoiceDate && row.invoiceDate >= startOfYear && row.totalAmount != null)
+      .map((row) => ({ currency: row.currency, amount: row.totalAmount as number }));
+    const totalSpendSummary = summarizeByCurrency(ytdRows);
+
+    const allAmountRows = rows.filter((row) => row.totalAmount != null).map((row) => ({ currency: row.currency, amount: row.totalAmount as number }));
+    const avgSummary = summarizeByCurrency(allAmountRows);
+
+    const overdueSummary = summarizeByCurrency(
+      overdueInvoices.filter((invoice) => invoice.totalAmount != null).map((invoice) => ({ currency: invoice.currency ?? null, amount: invoice.totalAmount as number }))
+    );
+    const dueSoonSummary = summarizeByCurrency(
+      dueSoonInvoices.filter((invoice) => invoice.totalAmount != null).map((invoice) => ({ currency: invoice.currency ?? null, amount: invoice.totalAmount as number }))
+    );
+
+    return {
+      kpi: {
+        totalSpend: { amount: totalSpendSummary.amount, currency: totalSpendSummary.currency, excludedCount: totalSpendSummary.excludedCount },
+        avgInvoiceValue: {
+          amount: avgSummary.includedCount > 0 ? avgSummary.amount / avgSummary.includedCount : 0,
+          currency: avgSummary.currency,
+          excludedCount: avgSummary.excludedCount,
+          invoiceCount: avgSummary.includedCount,
+        },
+        overdueAmount: { amount: overdueSummary.amount, currency: overdueSummary.currency, excludedCount: overdueSummary.excludedCount },
+        dueSoonAmount: { amount: dueSoonSummary.amount, currency: dueSoonSummary.currency, excludedCount: dueSoonSummary.excludedCount },
+      },
+      monthlyTrend: buildMonthlyTrend(rows, DEFAULT_TREND_MONTHS, now),
+      vendorComparison: buildVendorComparison(rows, DEFAULT_VENDOR_TOP_N),
+      chargeDistribution: buildChargeDistribution(rows),
+      serviceCostAnalysis: buildServiceCostAnalysis(rows, DEFAULT_SERVICE_TOP_N),
+      topRecurringExpenses: buildTopRecurringExpenses(rows, DEFAULT_RECURRING_TOP_N),
+    };
+  }
 }
