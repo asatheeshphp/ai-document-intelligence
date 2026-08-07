@@ -23,8 +23,16 @@ function escapeRegExp(value: string): string {
 export class InvoiceStatusQueryService {
   constructor(private readonly repository: ProcessingRepository = new ProcessingRepository()) {}
 
-  async listByStatus(status: InvoiceStatusFilter, dueWithinDays?: number): Promise<InvoiceStatusSummaryItem[]> {
-    const invoices = await this.repository.listInvoices(this.buildFilter(status, dueWithinDays));
+  async listByStatus(
+    status: InvoiceStatusFilter,
+    dueWithinDays?: number,
+    invoiceDateRange?: { from: Date; to: Date }
+  ): Promise<InvoiceStatusSummaryItem[]> {
+    const filter = this.buildFilter(status, dueWithinDays);
+    if (invoiceDateRange) {
+      filter.invoiceDate = { $gte: invoiceDateRange.from, $lte: invoiceDateRange.to };
+    }
+    const invoices = await this.repository.listInvoices(filter);
     return invoices.map((invoice) => this.toSummaryItem(invoice));
   }
 

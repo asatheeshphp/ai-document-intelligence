@@ -132,25 +132,16 @@ export function PaymentsDueList() {
 
   const { overdue, dueSoon, windowDays } = data;
 
-  if (overdue.length === 0 && dueSoon.length === 0) {
-    return (
-      <div className="mt-8 rounded-xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-        <h2 className="text-sm font-medium text-zinc-500 dark:text-zinc-400">Payments Due</h2>
-        <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
-          Nothing overdue or due within {windowDays} days.
-        </p>
-      </div>
-    );
-  }
-
   return (
     <div className="mt-8 grid grid-cols-1 gap-4 lg:grid-cols-2">
-      {overdue.length > 0 && (
-        <div className="rounded-xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-          <h2 className="text-sm font-medium text-red-600 dark:text-red-400">
-            Overdue ({overdue.length})
-          </h2>
-          <div className="mt-2">
+      <div className="rounded-xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+        <h2 className="text-sm font-medium text-red-600 dark:text-red-400">
+          Overdue ({overdue.length})
+        </h2>
+        {overdue.length === 0 ? (
+          <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">No overdue invoices.</p>
+        ) : (
+          <div className="mt-2 max-h-[170px] overflow-y-auto overflow-x-hidden pr-1">
             {overdue.map((item) => (
               <InvoiceRow
                 key={item.invoiceId}
@@ -161,15 +152,19 @@ export function PaymentsDueList() {
               />
             ))}
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
-      {dueSoon.length > 0 && (
-        <div className="rounded-xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-          <h2 className="text-sm font-medium text-amber-600 dark:text-amber-400">
-            Due within {windowDays} days ({dueSoon.length})
-          </h2>
-          <div className="mt-2">
+      <div className="rounded-xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+        <h2 className="text-sm font-medium text-amber-600 dark:text-amber-400">
+          Due within {windowDays} days ({dueSoon.length})
+        </h2>
+        {dueSoon.length === 0 ? (
+          <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">
+            Nothing due within {windowDays} days.
+          </p>
+        ) : (
+          <div className="mt-2 max-h-[170px] overflow-y-auto overflow-x-hidden pr-1">
             {dueSoon.map((item) => (
               <InvoiceRow
                 key={item.invoiceId}
@@ -180,8 +175,8 @@ export function PaymentsDueList() {
               />
             ))}
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }

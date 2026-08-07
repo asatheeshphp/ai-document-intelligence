@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { ProcessingRepository } from "@/repositories/processing.repository";
+import { normalizeCurrency } from "@/utils/currency-normalize";
 
 interface RouteParams {
   params: Promise<{ id: string }>;
@@ -76,7 +77,7 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
             invoiceDate: invoice.invoiceDate,
             dueDate: invoice.dueDate,
             poNumber: invoice.poNumber,
-            currency: invoice.currency,
+            currency: normalizeCurrency(invoice.currency) ?? undefined,
             subtotal: invoice.subtotal,
             taxAmount: invoice.taxAmount,
             totalAmount: invoice.totalAmount,

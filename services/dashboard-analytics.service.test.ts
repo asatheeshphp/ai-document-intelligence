@@ -22,36 +22,64 @@ function row(overrides: Partial<DashboardInvoiceRow> = {}): DashboardInvoiceRow 
     discount: 0,
     shippingCharge: 0,
     invoiceDate: new Date("2026-06-15T00:00:00Z"),
+    paymentStatus: "PENDING",
     lineItems: [],
     ...overrides,
   };
 }
 
 describe("buildMonthlyTrend", () => {
-  it("sums totalAmount per calendar month within the trailing window", () => {
+  it("sums totalAmount per calendar month, split into paid and unpaid", () => {
     const now = new Date("2026-07-15T00:00:00Z");
     const rows = [
-      row({ invoiceDate: new Date("2026-06-01T00:00:00Z"), totalAmount: 100 }),
-      row({ invoiceDate: new Date("2026-06-20T00:00:00Z"), totalAmount: 50 }),
-      row({ invoiceDate: new Date("2026-07-01T00:00:00Z"), totalAmount: 200 }),
+      row({ invoiceDate: new Date("2026-06-01T00:00:00Z"), totalAmount: 100, paymentStatus: "PAID" }),
+      row({ invoiceDate: new Date("2026-06-20T00:00:00Z"), totalAmount: 50, paymentStatus: "PENDING" }),
+      row({ invoiceDate: new Date("2026-07-01T00:00:00Z"), totalAmount: 200, paymentStatus: "PAID" }),
     ];
 
     const result = buildMonthlyTrend(rows, 2, now);
 
     expect(result).toEqual([
-      { label: "Jun 2026", amount: 150, currency: "INR", excludedCount: 0 },
-      { label: "Jul 2026", amount: 200, currency: "INR", excludedCount: 0 },
+      {
+        currency: "INR",
+        points: [
+          { label: "Jun 2026", paid: 100, unpaid: 50 },
+          { label: "Jul 2026", paid: 200, unpaid: 0 },
+        ],
+      },
     ]);
   });
 
-  it("includes a zero-amount point for a month with no invoices", () => {
+  it("splits into one series per currency instead of mixing them into one bar", () => {
     const now = new Date("2026-07-15T00:00:00Z");
-    const result = buildMonthlyTrend([], 2, now);
+    const rows = [
+      row({ invoiceDate: new Date("2026-06-01T00:00:00Z"), totalAmount: 100, currency: "INR" }),
+      row({ invoiceDate: new Date("2026-07-01T00:00:00Z"), totalAmount: 50, currency: "USD" }),
+    ];
+
+    const result = buildMonthlyTrend(rows, 2, now);
 
     expect(result).toEqual([
-      { label: "Jun 2026", amount: 0, currency: null, excludedCount: 0 },
-      { label: "Jul 2026", amount: 0, currency: null, excludedCount: 0 },
+      {
+        currency: "INR",
+        points: [
+          { label: "Jun 2026", paid: 0, unpaid: 100 },
+          { label: "Jul 2026", paid: 0, unpaid: 0 },
+        ],
+      },
+      {
+        currency: "USD",
+        points: [
+          { label: "Jun 2026", paid: 0, unpaid: 0 },
+          { label: "Jul 2026", paid: 0, unpaid: 50 },
+        ],
+      },
     ]);
+  });
+
+  it("returns no series when there is no data at all", () => {
+    const now = new Date("2026-07-15T00:00:00Z");
+    expect(buildMonthlyTrend([], 2, now)).toEqual([]);
   });
 
   it("excludes invoices with no date or no amount", () => {
@@ -63,7 +91,7 @@ describe("buildMonthlyTrend", () => {
 
     const result = buildMonthlyTrend(rows, 1, now);
 
-    expect(result).toEqual([{ label: "Jul 2026", amount: 0, currency: null, excludedCount: 0 }]);
+    expect(result).toEqual([]);
   });
 
   it("ignores invoices outside the trailing window", () => {
@@ -72,7 +100,7 @@ describe("buildMonthlyTrend", () => {
 
     const result = buildMonthlyTrend(rows, 1, now);
 
-    expect(result).toEqual([{ label: "Jul 2026", amount: 0, currency: null, excludedCount: 0 }]);
+    expect(result).toEqual([]);
   });
 });
 
@@ -87,9 +115,20 @@ describe("buildVendorComparison", () => {
     const result = buildVendorComparison(rows, 8);
 
     expect(result).toEqual([
-      { vendorName: "Vendor B", amount: 500, currency: "INR", excludedCount: 0 },
-      { vendorName: "Vendor A", amount: 150, currency: "INR", excludedCount: 0 },
+      { vendorName: "Vendor B", paid: 0, unpaid: 500, currency: "INR", excludedCount: 0 },
+      { vendorName: "Vendor A", paid: 0, unpaid: 150, currency: "INR", excludedCount: 0 },
     ]);
+  });
+
+  it("splits each vendor's total into paid and unpaid", () => {
+    const rows = [
+      row({ vendorName: "Vendor A", totalAmount: 100, paymentStatus: "PAID" }),
+      row({ vendorName: "Vendor A", totalAmount: 50, paymentStatus: "PENDING" }),
+    ];
+
+    const result = buildVendorComparison(rows, 8);
+
+    expect(result).toEqual([{ vendorName: "Vendor A", paid: 100, unpaid: 50, currency: "INR", excludedCount: 0 }]);
   });
 
   it("caps results to topN", () => {
@@ -220,7 +259,7 @@ describe("DashboardAnalyticsService.getBusinessDashboardData", () => {
     } as unknown as InvoiceStatusQueryService;
   }
 
-  it("computes total spend YTD, average invoice value, and overdue/due-soon KPIs", async () => {
+  it("computes total invoices YTD and overdue/due-soon counts", async () => {
     const now = new Date("2026-07-30T00:00:00Z");
     const rows = [
       row({ invoiceId: "a", invoiceDate: new Date("2026-01-15T00:00:00Z"), totalAmount: 100 }),
@@ -232,10 +271,7 @@ describe("DashboardAnalyticsService.getBusinessDashboardData", () => {
     const service = new DashboardAnalyticsService(fakeRepository(rows), fakeStatusService(overdue, dueSoon));
     const result = await service.getBusinessDashboardData(now);
 
-    expect(result.kpi.totalSpend).toEqual({ amount: 100, currency: "INR", excludedCount: 0 });
-    expect(result.kpi.avgInvoiceValue).toEqual({ amount: 500, currency: "INR", excludedCount: 0, invoiceCount: 2 });
-    expect(result.kpi.overdueAmount).toEqual({ amount: 50, currency: "INR", excludedCount: 0 });
-    expect(result.kpi.dueSoonAmount).toEqual({ amount: 75, currency: "INR", excludedCount: 0 });
+    expect(result.kpi).toEqual({ totalInvoices: 1, overdueCount: 1, dueSoonCount: 1 });
   });
 
   it("includes all six widget payloads in the result", async () => {
@@ -250,13 +286,13 @@ describe("DashboardAnalyticsService.getBusinessDashboardData", () => {
     expect(result).toHaveProperty("topRecurringExpenses");
   });
 
-  it("requests OVERDUE and UPCOMING-30-day status filters", async () => {
+  it("requests OVERDUE and UPCOMING-10-day status filters", async () => {
     const statusService = fakeStatusService([], []);
     const service = new DashboardAnalyticsService(fakeRepository([]), statusService);
 
     await service.getBusinessDashboardData(new Date("2026-07-30T00:00:00Z"));
 
     expect(statusService.listByStatus).toHaveBeenCalledWith("OVERDUE");
-    expect(statusService.listByStatus).toHaveBeenCalledWith("UPCOMING", 30);
+    expect(statusService.listByStatus).toHaveBeenCalledWith("UPCOMING", 10);
   });
 });

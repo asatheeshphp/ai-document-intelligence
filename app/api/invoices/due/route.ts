@@ -1,7 +1,8 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { ProcessingRepository } from "@/repositories/processing.repository";
+import { normalizeCurrency } from "@/utils/currency-normalize";
 
-const DEFAULT_WINDOW_DAYS = 7;
+const DEFAULT_WINDOW_DAYS = 10;
 
 export async function GET(request: NextRequest) {
   try {
@@ -37,7 +38,7 @@ export async function GET(request: NextRequest) {
         vendorName: invoice.vendorName,
         dueDate,
         totalAmount: invoice.totalAmount,
-        currency: invoice.currency,
+        currency: normalizeCurrency(invoice.currency),
       };
 
       if (dueDate < now) {

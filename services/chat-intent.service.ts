@@ -145,7 +145,28 @@ const GENERIC_ITEM_FILLER_WORDS = new Set(["all", "the", "my", "me", "any", "eve
 // model gets these right directly, or the PAID/UPCOMING overrides above already catch
 // them) -- excluded here so a rare stray RETRIEVAL vote on one of these doesn't get
 // captured as a nonsense LINE_ITEM_AGGREGATION keyword instead.
-const GENERIC_ITEM_STATUS_WORDS = new Set(["paid", "unpaid", "overdue", "upcoming", "pending", "due"]);
+const GENERIC_ITEM_STATUS_WORDS = new Set(["paid", "unpaid", "overdue", "upcoming", "pending", "due", "outstanding"]);
+
+// "Pending"/"outstanding" are the two most common plain-English synonyms for "unpaid"
+// used in this app's own questions, but neither appears in the Ollama prompt's own
+// STATUS_FILTER examples (only "unpaid"/"paid"/"overdue"/"due soon" are demonstrated) --
+// same "small model capacity limit" pattern as PAID_STATUS_FILTER_PATTERNS above, just
+// triggered by different vocabulary. Confirmed live: "list all payment pending invoices
+// with total amount" and "list out the outstanding invoices grand total amount" both
+// classified RETRIEVAL, sending a status-shaped question through generic hybrid search
+// instead of the deterministic, amount-inclusive computed answer built for exactly this.
+const UNPAID_STATUS_FILTER_PATTERNS = [
+  /\bpayment\s+pending\b/i,
+  /\bpending\s+payment\b/i,
+  /\bpending\s+invoices?\b/i,
+  /\boutstanding\s+invoices?\b/i,
+  /\boutstanding\s+(amount|total|balance|payments?)\b/i,
+  /\b(get|list|show|find|display)\b(\s+(me|the|all|my))*\s+(pending|outstanding)\s+invoices?\b/i,
+];
+
+function looksLikeUnpaidStatusFilter(question: string): boolean {
+  return UNPAID_STATUS_FILTER_PATTERNS.some((pattern) => pattern.test(question));
+}
 
 function looksLikeGenericItemInvoiceQuery(question: string): string | null {
   const match = GENERIC_ITEM_INVOICE_PATTERN.exec(question);
@@ -188,6 +209,21 @@ export class ChatIntentService {
     }
     if (result.type === "RETRIEVAL" && looksLikePaidStatusFilter(question)) {
       return { type: "STATUS_FILTER", status: "PAID" };
+    }
+    // Broader guard than the PAID/UPCOMING overrides above: "outstanding"/"pending"
+    // wording isn't in the Ollama prompt's own status vocabulary (PAID|UNPAID|OVERDUE|
+    // UPCOMING), so on this model it doesn't reliably land on a clean RETRIEVAL vote the
+    // way the "paid" polarity bug did -- confirmed live, it also landed on STATUS_FILTER
+    // with no status extracted at all, and on AGGREGATION/LINE_ITEM_AGGREGATION, all of
+    // which skipped the `=== "RETRIEVAL"` check above and fell through to generic
+    // retrieval regardless. This fires on the keyword match alone unless the model
+    // already confidently chose a DIFFERENT real status (PAID/OVERDUE/UPCOMING) --
+    // respecting that case rather than stomping on a more specific correct answer.
+    if (
+      looksLikeUnpaidStatusFilter(question) &&
+      !(result.type === "STATUS_FILTER" && result.status && result.status !== "UNPAID")
+    ) {
+      return { type: "STATUS_FILTER", status: "UNPAID" };
     }
     if (result.type === "STATUS_FILTER" && looksLikePaymentTermsQuestion(question)) {
       return { type: "RETRIEVAL" };

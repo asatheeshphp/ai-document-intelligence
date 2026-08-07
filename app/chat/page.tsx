@@ -57,7 +57,7 @@ export default function ChatPage() {
     <div className="mx-auto flex h-[calc(100vh-73px)] max-w-4xl flex-col px-6 py-10">
       <h1 className="text-2xl font-semibold text-zinc-900 dark:text-zinc-50">AI Chat Assistant</h1>
       <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-        Ask natural-language questions grounded in your indexed invoices.
+        Ask questions about your invoices and get instant AI-powered answers.
       </p>
 
       <div className="mt-6 flex-1 space-y-3 overflow-y-auto">

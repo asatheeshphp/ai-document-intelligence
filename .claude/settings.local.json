@@ -201,7 +201,18 @@
       "Bash(echo \"exit:$? \\(1 = not ignored, good\\)\")",
       "Bash(npm run *)",
       "Bash(python3 -)",
-      "Bash(npx eslint *)"
+      "Bash(npx eslint *)",
+      "Bash(git stash *)",
+      "PowerShell(Get-NetTCPConnection *)",
+      "Bash(rm -f charge-tooltip.png charge-tooltip-tax.png)",
+      "Bash(npm uninstall *)",
+      "Bash(bash \"C:/Users/asath/.claude/skills/brainstorming/scripts/start-server.sh\" --project-dir \"F:/ai-document-intelligence\")",
+      "PowerShell(npx tsc --noEmit -p . 2>&1 | Select-Object -First 30)",
+      "Bash(tasklist //FI \"IMAGENAME eq ollama.exe\" //FO TABLE)",
+      "Bash(awk -F: '{sum+=$2; print} END{print \"TOTAL:\",sum}')",
+      "Bash(tasklist //FI \"IMAGENAME eq node.exe\")",
+      "Bash(findstr \"LISTENING\")",
+      "Bash(findstr \"3000 3001\")"
     ]
   }
 }

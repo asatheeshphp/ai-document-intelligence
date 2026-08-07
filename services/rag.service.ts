@@ -10,6 +10,7 @@ import { LineItemAggregationService, type LineItemAggregationSummary } from "@/s
 import { ChatIntentService } from "@/services/chat-intent.service";
 import { ProcessingRepository } from "@/repositories/processing.repository";
 import { hasMeaningfulTokens, extractMeaningfulTokens } from "@/utils/lexical-score";
+import { extractDateRangeFromQuery, type DateRangeFilter } from "@/utils/date-range-from-query";
 import type { SearchResultItem } from "@/services/search.service";
 import type { ChatIntent } from "@/schemas/chat-intent.schema";
 
@@ -58,10 +59,26 @@ const FABRICATED_IDENTIFIER_FALLBACK =
 // Deliberately narrow: broader alphanumeric-with-dashes patterns also cover PO numbers
 // ("PO-45879") and multi-segment order IDs ("IN-2012-BF1121558-40955"), which are real,
 // legitimate identifiers this check must not flag just for not being an invoice number.
+// Used only for the fabricated-identifier veto below, where a false positive (treating a
+// legitimately-mentioned PO number as a hallucinated invoice number) would wrongly reject
+// a correct answer -- keep this strict.
 const INVOICE_NUMBER_SHAPE_PATTERN = /\b[a-z]{2,6}-\d{2,4}-\d{1,6}\b/gi;
+
+// Broader than INVOICE_NUMBER_SHAPE_PATTERN above: also matches single-hyphen shapes
+// like "BW-7789", which real invoice numbers in this corpus can also take even though
+// PO numbers ("PO-45879") share that exact shape. Used only for context-carrying below,
+// where the cost of a false positive is low (the candidate is only used as extra literal
+// search text, never as a veto) -- confirmed live: "BW-7789" was never recognized by the
+// strict pattern, so a follow-up like "explain this invoice" after looking it up had
+// nothing to carry forward and fell through to an unanchored, unrelated search.
+const LOOSE_IDENTIFIER_SHAPE_PATTERN = /\b[a-z]{2,6}-\d{1,6}(?:-\d{1,6})?\b/gi;
 
 function extractInvoiceNumberShapedCandidates(text: string): string[] {
   return [...text.matchAll(INVOICE_NUMBER_SHAPE_PATTERN)].map((match) => match[0]);
+}
+
+function extractLooseIdentifierCandidates(text: string): string[] {
+  return [...text.matchAll(LOOSE_IDENTIFIER_SHAPE_PATTERN)].map((match) => match[0]);
 }
 
 // Skip line-item quantities, tax percentages, and other small incidental numbers --
@@ -225,12 +242,14 @@ const STATUS_FILTER_LABELS: Record<"PAID" | "UNPAID" | "OVERDUE" | "UPCOMING", s
 // InvoiceStatusQueryService/MongoDB, never touched by the model.
 function formatStatusFilterAnswer(
   invoices: InvoiceStatusSummaryItem[],
-  status: "PAID" | "UNPAID" | "OVERDUE" | "UPCOMING"
+  status: "PAID" | "UNPAID" | "OVERDUE" | "UPCOMING",
+  dateRange?: DateRangeFilter
 ): string {
   const label = STATUS_FILTER_LABELS[status];
+  const rangeSuffix = formatDateRangeSuffix(dateRange);
 
   if (invoices.length === 0) {
-    return `I couldn't find any ${label} invoices.`;
+    return `I couldn't find any ${label} invoices${rangeSuffix}.`;
   }
 
   const lines = invoices.map((invoice) => {
@@ -243,7 +262,96 @@ function formatStatusFilterAnswer(
   });
 
   const invoiceWord = invoices.length === 1 ? "invoice" : "invoices";
-  return `Found ${invoices.length} ${label} ${invoiceWord}:\n${lines.join("\n")}`;
+  return `Found ${invoices.length} ${label} ${invoiceWord}${rangeSuffix}:\n${lines.join("\n")}`;
+}
+
+// Confirmed live: "list out the unpaid invoices grand total amount" and "...outstanding
+// invoices grand total amount" both fell through to generic retrieval, where the model
+// tried to sum the individual invoice amounts itself from whatever chunks it retrieved --
+// exactly the "never let the model touch the arithmetic" problem AGGREGATION/
+// LINE_ITEM_AGGREGATION already solve for vendor and category totals. This is the same
+// fix for status-filtered totals: a real sum over InvoiceStatusQueryService's own
+// results, never the model's.
+const GRAND_TOTAL_KEYWORD_PATTERN = /\bgrand\s+total\b|\btotal\s+amount\b|\boutstanding\s+amount\b|\bcombined\s+total\b|\bsum\s+of\b/i;
+
+function wantsComputedStatusTotal(question: string): boolean {
+  return GRAND_TOTAL_KEYWORD_PATTERN.test(question);
+}
+
+function formatDateRangeSuffix(dateRange?: DateRangeFilter): string {
+  if (!dateRange) return "";
+  return ` (${dateRange.from.toISOString().slice(0, 10)} to ${dateRange.to.toISOString().slice(0, 10)})`;
+}
+
+// Matches invoice.currency's own normalized form (see utils/currency-normalize.ts --
+// storage is always one of these ISO codes, never a raw symbol), so a literal, safe
+// substring/word match against the question is enough; no fuzzy currency-name matching.
+const CURRENCY_CODE_PATTERN = /\b(USD|INR|EUR|GBP|JPY)\b/gi;
+
+// Confirmed live: "...USD & INR separate" and "...INR invoices only" both got back the
+// EXACT SAME merged total as a plain, currency-unspecified question -- the currency
+// wording in the question was parsed by nothing at all downstream of intent detection,
+// so a filter/breakdown request was silently ignored rather than answered or rejected.
+function extractRequestedCurrencies(question: string): string[] {
+  return Array.from(new Set((question.toUpperCase().match(CURRENCY_CODE_PATTERN) ?? []).map((code) => code.trim())));
+}
+
+function filterInvoicesByRequestedCurrencies(
+  invoices: InvoiceStatusSummaryItem[],
+  requestedCurrencies: string[]
+): InvoiceStatusSummaryItem[] {
+  if (requestedCurrencies.length === 0) return invoices;
+  return invoices.filter((invoice) => invoice.currency != null && requestedCurrencies.includes(invoice.currency.toUpperCase()));
+}
+
+// Fixed string template, deliberately NOT an LLM call -- same "never let the model touch
+// the arithmetic" reasoning as formatSpendAnswer/formatLineItemAggregationAnswer.
+function formatStatusTotalAnswer(
+  invoices: InvoiceStatusSummaryItem[],
+  status: "PAID" | "UNPAID" | "OVERDUE" | "UPCOMING",
+  dateRange?: DateRangeFilter
+): string {
+  const label = STATUS_FILTER_LABELS[status];
+  const rangeSuffix = formatDateRangeSuffix(dateRange);
+
+  if (invoices.length === 0) {
+    return `I couldn't find any ${label} invoices${rangeSuffix}.`;
+  }
+
+  const withAmount = invoices.filter(
+    (invoice): invoice is InvoiceStatusSummaryItem & { totalAmount: number } => invoice.totalAmount !== undefined
+  );
+
+  if (withAmount.length === 0) {
+    const invoiceWord = invoices.length === 1 ? "invoice" : "invoices";
+    return `Found ${invoices.length} ${label} ${invoiceWord}${rangeSuffix}, but none have a recorded amount to total.`;
+  }
+
+  const groups = new Map<string, { count: number; total: number }>();
+  for (const invoice of withAmount) {
+    const currency = invoice.currency ?? "unspecified currency";
+    const entry = groups.get(currency) ?? { count: 0, total: 0 };
+    entry.count += 1;
+    entry.total += invoice.totalAmount;
+    groups.set(currency, entry);
+  }
+
+  // Break down per currency whenever more than one is actually present, rather than
+  // merging them into one number with a caveat note appended -- a real per-currency
+  // total is a useful answer; a note flagging that a merged number is meaningless is
+  // not. (When exactly one currency is requested/present, this collapses to the same
+  // single-line answer as before.)
+  if (groups.size > 1) {
+    const lines = Array.from(groups.entries()).map(([currency, { count, total }]) => {
+      const invoiceWord = count === 1 ? "invoice" : "invoices";
+      return `- ${currency} ${total.toFixed(2)} across ${count} ${invoiceWord}`;
+    });
+    return `Grand total by currency for ${label} invoices${rangeSuffix}:\n${lines.join("\n")}`;
+  }
+
+  const [[currency, { count, total }]] = groups;
+  const invoiceWord = count === 1 ? "invoice" : "invoices";
+  return `The grand total across ${count} ${label} ${invoiceWord}${rangeSuffix} is ${currency} ${total.toFixed(2)}.`;
 }
 
 // Fixed string template, deliberately NOT an LLM call -- reports the invoice's REAL
@@ -345,8 +453,32 @@ export class RagService {
       // slightly wrong" ambiguity to fall through on, so this always answers directly,
       // including the zero-results case ("I couldn't find any unpaid invoices" is
       // itself a real, useful answer, not a failure to dead-end from).
-      const invoices = await this.invoiceStatusQueryService.listByStatus(intent.status, intent.dueWithinDays);
-      return { answer: formatStatusFilterAnswer(invoices, intent.status), sources: [], mode: "computed" };
+      //
+      // Same month-name extraction search.service.ts uses for retrieval -- a status
+      // question naming a month (e.g. "unpaid invoices for July") should scope to that
+      // invoice date range too, not just list every invoice ever in that status.
+      const dateRange = extractDateRangeFromQuery(input.question) ?? undefined;
+      const allInvoices = await this.invoiceStatusQueryService.listByStatus(intent.status, intent.dueWithinDays, dateRange);
+
+      // "...USD & INR separate" and "...INR invoices only" both need the invoice set
+      // itself narrowed BEFORE totaling/listing -- see extractRequestedCurrencies'
+      // comment for the confirmed live bug where this was silently ignored entirely.
+      const requestedCurrencies = extractRequestedCurrencies(input.question);
+      const invoices = filterInvoicesByRequestedCurrencies(allInvoices, requestedCurrencies);
+
+      if (allInvoices.length > 0 && invoices.length === 0) {
+        const currencySuffix = ` in ${requestedCurrencies.join("/")}`;
+        return {
+          answer: `I couldn't find any ${STATUS_FILTER_LABELS[intent.status]} invoices${currencySuffix}${formatDateRangeSuffix(dateRange)}.`,
+          sources: [],
+          mode: "computed",
+        };
+      }
+
+      const answer = wantsComputedStatusTotal(input.question)
+        ? formatStatusTotalAnswer(invoices, intent.status, dateRange)
+        : formatStatusFilterAnswer(invoices, intent.status, dateRange);
+      return { answer, sources: [], mode: "computed" };
     }
 
     if (intent?.type === "LINE_ITEM_AGGREGATION" && intent.keyword) {
@@ -462,18 +594,18 @@ export class RagService {
    * different invoices (or none), there's nothing safe to carry forward, so the
    * question is left untouched.
    *
-   * Only recognizes the letters-digits-digits invoice-number shape (e.g.
-   * "EXL-2026-2048"), not bare-numeric invoice numbers (e.g. "27639") -- a bare number
-   * is too easily some other figure entirely (an amount, a quantity), so extending this
-   * to bare numbers risks nudging toward the wrong thing more often than it helps.
+   * Recognizes the letters-digits[-digits] identifier shape (e.g. "EXL-2026-2048",
+   * "BW-7789"), not bare-numeric invoice numbers (e.g. "27639") -- a bare number is too
+   * easily some other figure entirely (an amount, a quantity), so extending this to bare
+   * numbers risks nudging toward the wrong thing more often than it helps.
    */
   private buildContextAwareSearchQuery(question: string, history: RagChatTurn[]): string {
-    if (extractInvoiceNumberShapedCandidates(question).length > 0) return question;
+    if (extractLooseIdentifierCandidates(question).length > 0) return question;
 
     const lastTurn = history.at(-1);
     if (!lastTurn) return question;
 
-    const candidates = extractInvoiceNumberShapedCandidates(lastTurn.content);
+    const candidates = extractLooseIdentifierCandidates(lastTurn.content);
     if (candidates.length !== 1) return question;
 
     return `${candidates[0]} ${question}`;

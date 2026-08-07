@@ -76,6 +76,7 @@ export interface DashboardInvoiceRow {
   discount: number | null;
   shippingCharge: number | null;
   invoiceDate: Date | null;
+  paymentStatus: IInvoice["paymentStatus"];
   lineItems: DashboardLineItemRow[];
 }
 
@@ -122,6 +123,7 @@ export interface DocumentSummaryItem {
   customerName?: string;
   invoiceDate?: Date;
   totalAmount?: number;
+  currency?: string;
   chunkCount: number;
 }
 
@@ -618,6 +620,7 @@ export class ProcessingRepository extends BaseRepository<unknown> {
           discount: extractedData?.totals?.discount ?? null,
           shippingCharge: extractedData?.totals?.shippingCharge ?? null,
           invoiceDate: invoice.invoiceDate ?? null,
+          paymentStatus: invoice.paymentStatus,
           lineItems,
         };
       });
@@ -730,7 +733,17 @@ export class ProcessingRepository extends BaseRepository<unknown> {
       const limit = input.limit && input.limit > 0 ? Math.floor(input.limit) : 20;
       const skip = (page - 1) * limit;
 
-      const match: Record<string, unknown> = {};
+      // Documents classified as not-an-invoice (or one of the legacy non-invoice types
+      // from the earlier 6-way classifier -- see DocumentType's comment) never get an
+      // Invoice row, so every invoice-specific column in this listing would render blank
+      // for them with no way to tell why. Excluded here rather than shown with a
+      // clarifying badge -- this listing is specifically an invoice list, not a general
+      // document log. "UNKNOWN" (not yet classified -- still PENDING/EXTRACTING/
+      // OCR_REQUIRED) is deliberately still included so in-progress documents remain
+      // visible.
+      const match: Record<string, unknown> = {
+        documentType: { $nin: ["NOT_INVOICE", "RECEIPT", "PURCHASE_ORDER", "CONTRACT", "RESUME", "OTHER"] },
+      };
       if (input.status) match.status = input.status;
 
       const basePipeline: mongoose.PipelineStage[] = [
@@ -770,12 +783,14 @@ export class ProcessingRepository extends BaseRepository<unknown> {
             documentId: { $toString: "$_id" },
             filename: 1,
             status: 1,
+            documentType: 1,
             createdAt: 1,
             invoiceNumber: "$invoice.invoiceNumber",
             vendorName: "$invoice.vendorName",
             customerName: "$invoice.customerName",
             invoiceDate: "$invoice.invoiceDate",
             totalAmount: "$invoice.totalAmount",
+            currency: "$invoice.currency",
             chunkCount: { $size: "$chunks" },
           },
         },

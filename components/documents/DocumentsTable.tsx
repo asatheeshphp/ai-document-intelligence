@@ -10,6 +10,7 @@ export interface DocumentSummaryItem {
   customerName?: string;
   invoiceDate?: string;
   totalAmount?: number;
+  currency?: string;
   chunkCount: number;
 }
 
@@ -32,9 +33,10 @@ function formatDate(value?: string) {
   return Number.isNaN(date.getTime()) ? "—" : date.toLocaleDateString();
 }
 
-function formatAmount(value?: number) {
+function formatAmount(value?: number, currency?: string) {
   if (value == null) return "—";
-  return value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const formatted = value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return currency ? `${currency} ${formatted}` : formatted;
 }
 
 export function DocumentsTable({
@@ -68,7 +70,6 @@ export function DocumentsTable({
         <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
           {items.map((item) => {
             const isConfirmingDelete = confirmingDeleteId === item.documentId;
-            const isReindexing = reindexingId === item.documentId;
             const isDeleting = deletingId === item.documentId;
             const isProcessingAnyway = processingAnywayId === item.documentId;
             const isDuplicateReview = item.status === "DUPLICATE_REVIEW";
@@ -81,7 +82,7 @@ export function DocumentsTable({
                 <td className="px-4 py-3">{item.vendorName ?? "—"}</td>
                 <td className="px-4 py-3">{item.customerName ?? "—"}</td>
                 <td className="px-4 py-3">{formatDate(item.invoiceDate)}</td>
-                <td className="px-4 py-3 text-right">{formatAmount(item.totalAmount)}</td>
+                <td className="px-4 py-3 text-right">{formatAmount(item.totalAmount, item.currency)}</td>
                 <td className="px-4 py-3 text-right">{item.chunkCount}</td>
                 <td className="px-4 py-3">
                   <StatusBadge status={item.status} />
@@ -118,14 +119,6 @@ export function DocumentsTable({
                           className="rounded-md border border-zinc-200 px-2.5 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
                         >
                           View
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => onReindex(item.documentId)}
-                          disabled={isReindexing}
-                          className="rounded-md border border-zinc-200 px-2.5 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
-                        >
-                          {isReindexing ? "Reindexing…" : "Re-index"}
                         </button>
                         {isDuplicateReview && (
                           <button

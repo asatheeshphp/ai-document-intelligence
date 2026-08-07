@@ -1,3 +1,5 @@
+import { normalizeCurrency } from "@/utils/currency-normalize";
+
 export interface CurrencyAmountRow {
   currency: string | null;
   amount: number;
@@ -19,7 +21,7 @@ export function summarizeByCurrency(rows: CurrencyAmountRow[]): CurrencySummary 
   const groups = new Map<string, { total: number; count: number }>();
 
   for (const row of rows) {
-    const key = row.currency ?? "";
+    const key = normalizeCurrency(row.currency) ?? "";
     const group = groups.get(key) ?? { total: 0, count: 0 };
     group.total += row.amount;
     group.count += 1;

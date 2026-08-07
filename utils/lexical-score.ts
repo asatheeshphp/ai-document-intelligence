@@ -26,10 +26,24 @@ function looksLikeBareYear(token: string): boolean {
   return /^\d{4}$/.test(token);
 }
 
+// A hyphenated identifier like "BW-7789" or "EXL-2026-2048" carries real meaning as a
+// whole, but its individual pieces don't survive the generic word filters below on their
+// own: a short letter prefix ("bw") fails the length>=3 check, and a numeric segment that
+// happens to be 4 digits ("7789") gets discarded by looksLikeBareYear even though it isn't
+// a year here. Confirmed live: a question naming invoice "BW-7789" lost the identifier
+// entirely (tokenize produced nothing from it), which defeated both the premise-grounding
+// check (questionSharesVocabularyWith in rag.service.ts) and the ranking boost below --
+// captured here as a whole token, exempt from those word-level filters, before the
+// generic split runs.
+const IDENTIFIER_PATTERN = /\b[a-z]{2,6}-\d{1,6}(?:-\d{1,6})?\b/gi;
+
 function tokenize(text: string): string[] {
-  return (text.toLowerCase().match(/[a-z0-9]+/g) ?? []).filter(
+  const lower = text.toLowerCase();
+  const identifiers = lower.match(IDENTIFIER_PATTERN) ?? [];
+  const words = (lower.match(/[a-z0-9]+/g) ?? []).filter(
     (token) => token.length >= 3 && !STOPWORDS.has(token) && !looksLikeBareYear(token)
   );
+  return [...identifiers, ...words];
 }
 
 // Plain substring inclusion missed a real case: query "keyboards" against chunk text

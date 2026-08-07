@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { ProcessingRepository } from "@/repositories/processing.repository";
+import { normalizeCurrency } from "@/utils/currency-normalize";
 
 export async function GET(request: NextRequest) {
   try {
@@ -18,7 +19,11 @@ export async function GET(request: NextRequest) {
       status,
     });
 
-    return NextResponse.json({ success: true, ...result });
+    return NextResponse.json({
+      success: true,
+      ...result,
+      items: result.items.map((item) => ({ ...item, currency: normalizeCurrency(item.currency) ?? undefined })),
+    });
   } catch (error) {
     return NextResponse.json(
       {

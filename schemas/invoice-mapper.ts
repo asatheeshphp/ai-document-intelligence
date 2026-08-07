@@ -2,6 +2,7 @@ import dayjs from "dayjs";
 import customParseFormat from "dayjs/plugin/customParseFormat";
 import utc from "dayjs/plugin/utc";
 import type { InvoiceExtraction } from "@/schemas/invoice.schema";
+import { normalizeCurrency } from "@/utils/currency-normalize";
 
 dayjs.extend(customParseFormat);
 dayjs.extend(utc);
@@ -68,7 +69,7 @@ export function mapInvoiceExtractionToInvoiceFields(
     invoiceDate: toDate(extraction.invoice.invoiceDate),
     dueDate: toDate(extraction.invoice.dueDate),
     poNumber: extraction.invoice.poNumber ?? undefined,
-    currency: extraction.invoice.currency ?? undefined,
+    currency: normalizeCurrency(extraction.invoice.currency) ?? undefined,
     subtotal: extraction.totals.subtotal ?? undefined,
     taxAmount: extraction.totals.totalTax ?? undefined,
     totalAmount: extraction.totals.grandTotal ?? undefined,

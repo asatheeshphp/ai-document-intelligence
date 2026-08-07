@@ -4,9 +4,7 @@ import { useEffect, useState } from "react";
 import { KpiStrip } from "@/components/dashboard/KpiStrip";
 import { MonthlySpendTrendChart } from "@/components/dashboard/MonthlySpendTrendChart";
 import { VendorComparisonChart } from "@/components/dashboard/VendorComparisonChart";
-import { ChargeDistributionChart } from "@/components/dashboard/ChargeDistributionChart";
 import { ServiceCostAnalysisChart } from "@/components/dashboard/ServiceCostAnalysisChart";
-import { TopRecurringExpensesList } from "@/components/dashboard/TopRecurringExpensesList";
 import { PaymentsDueList } from "@/components/PaymentsDueList";
 import type { DashboardBusinessData } from "@/services/dashboard-analytics.service";
 
@@ -47,7 +45,7 @@ export default function DashboardPage() {
     <div className="mx-auto max-w-6xl px-6 py-10">
       <h1 className="text-2xl font-semibold text-zinc-900 dark:text-zinc-50">Dashboard</h1>
       <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-        Spending overview computed from your indexed invoices.
+        Intelligent spending analytics from your invoice data.
       </p>
 
       {loading && (
@@ -74,17 +72,17 @@ export default function DashboardPage() {
             <MonthlySpendTrendChart data={data.monthlyTrend} />
           </div>
 
-          <div className="mt-8 grid grid-cols-1 gap-4 lg:grid-cols-2">
-            <VendorComparisonChart data={data.vendorComparison} />
-            <ChargeDistributionChart data={data.chargeDistribution} />
+          <div className="mt-8">
+            <PaymentsDueList />
           </div>
 
-          <div className="mt-8 grid grid-cols-1 gap-4 lg:grid-cols-2">
-            <TopRecurringExpensesList data={data.topRecurringExpenses} />
+          <div className="mt-8">
+            <VendorComparisonChart data={data.vendorComparison} />
+          </div>
+
+          <div className="mt-8">
             <ServiceCostAnalysisChart data={data.serviceCostAnalysis} />
           </div>
-
-          <PaymentsDueList />
         </>
       )}
     </div>

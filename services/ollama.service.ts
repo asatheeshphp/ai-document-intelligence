@@ -62,8 +62,16 @@ Rules:
 - The "taxes" array must contain ONLY tax/levy lines that actually appear, printed, in the invoice text below — GST, CGST, SGST, IGST, VAT, sales tax, and duty are only examples of what a tax line might be called, NOT a checklist to fill in. Do not add an entry for a tax type just because it's a common one; a tax type not printed anywhere in the text must not appear in "taxes" at all. Never include the subtotal, discount, shipping charge, or grand/total payable amount as a "taxes" entry — those belong solely in "totals".
 - Ignore any stray formatting artifacts in the source text (e.g. leftover HTML-like tags such as "<b>" or "</b>") — treat them as if they were not there and extract only the real label and value.
 - Put any clearly labeled invoice data that doesn't fit the named fields into "additionalFields" as key-value pairs (e.g. project code, department, delivery date). Leave it as an empty object if there is nothing extra.
-- Numbers must be plain numbers, without currency symbols or thousands separators.
+- Numbers must be plain numbers, without currency symbols or thousands separators. A comma inside a number is ALWAYS a thousands separator, NEVER a decimal point — "55,539.00" means fifty-five thousand five hundred thirty-nine (55539.00), NOT 55.539; "1,234,567.89" means 1234567.89. The decimal point is always a period ("."), never a comma.
 - An "address.raw" field must contain ONLY that party's physical postal address lines (street, city, state, postal code, country) — nothing else. Never copy invoice numbers, dates, GSTIN/tax IDs, vehicle/trip/driver details, charge/line-item tables, totals, delivery remarks, or any other section of the document into an address field, even if no true address is present in the text. If no physical address can be found for a party, set "address.raw" to null rather than filling it with unrelated document text.
+- "totals.grandTotal" is the invoice's original TOTAL amount as billed — the line usually labeled "Total", "Grand Total", "Invoice Total", or "Amount Due" on an invoice with no prior payment. It is NOT the same thing as "Balance Due", "Amount Payable", or "Amount Remaining" — those are what's left AFTER subtracting a "Payment Made"/"Amount Paid"/"Less: Payment" line, and must never be used for grandTotal. When an invoice shows both a "Total" line and a smaller "Balance Due" line together with a payment-deduction line, use the "Total" line's value for grandTotal, not "Balance Due".
+
+Worked example — given these lines on an invoice:
+Sub Total 55,539.00
+Total $55,539.00
+Payment Made (-) 539.00
+Balance Due $55,000.00
+the correct "totals" is {"subtotal": 55539.00, "grandTotal": 55539.00, ...} — grandTotal takes the "Total" line's value (55539.00), NOT the "Balance Due" line's value (55000.00), because Balance Due already has a payment subtracted out of it.
 
 Invoice text:
 """

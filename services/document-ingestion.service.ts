@@ -11,11 +11,13 @@ import type { DocumentClassification } from "@/schemas/document-classification.s
 import { extractPdfText } from "@/utils/pdf-text-extractor";
 import { isImageFile, isPdfFile } from "@/utils/document-file-type";
 import { mapInvoiceExtractionToInvoiceFields } from "@/schemas/invoice-mapper";
+import { resolveInvoiceTotal } from "@/utils/invoice-total-anchor";
 import { InvoiceIndexingService } from "@/services/invoice-indexing.service";
 import type { InvoiceExtraction } from "@/schemas/invoice.schema";
 import type { IDocument } from "@/models/document.model";
 import type { IExtraction } from "@/models/extraction.model";
 import type { IInvoice } from "@/models/invoice.model";
+import type { InvoiceExtractionOutcome } from "@/services/ollama.service";
 
 export interface ProcessLocalDocumentInput {
   sourcePath: string;
@@ -36,6 +38,33 @@ export class DocumentIngestionService {
       ollamaService
     )
   ) {}
+
+  /**
+   * The extraction model runs at temperature 0.1, not 0 -- the same document text can
+   * come back with a different result on two separate calls. Observed live on two real
+   * invoices: the first attempt left totals.grandTotal null (once because the model
+   * hallucinated tax entries that inflated totalTax and left grandTotal unreconciled,
+   * once because it just missed a total that was plainly printed in the text), and a
+   * second identical call against the same text got it right both times. One retry on a
+   * null grandTotal costs one extra model call only in that failure case, and gives up
+   * (keeping the first outcome) if the retry doesn't do better -- this is a mitigation
+   * for model flakiness, not a guarantee.
+   */
+  private async extractInvoiceDataWithRetry(
+    text: string
+  ): Promise<{ outcome: InvoiceExtractionOutcome; attempts: number }> {
+    const first = await this.ollamaService.extractInvoiceData(text);
+    if (first.success && first.data?.totals.grandTotal != null) {
+      return { outcome: first, attempts: 1 };
+    }
+
+    const retry = await this.ollamaService.extractInvoiceData(text);
+    if (retry.success && retry.data?.totals.grandTotal != null) {
+      return { outcome: retry, attempts: 2 };
+    }
+
+    return { outcome: first, attempts: 2 };
+  }
 
   async processLocalDocument(input: ProcessLocalDocumentInput) {
     const absolutePath = path.resolve(input.sourcePath);
@@ -223,12 +252,12 @@ export class DocumentIngestionService {
       };
     }
 
-    const extractionOutcome = await this.ollamaService.extractInvoiceData(text);
+    const { outcome: extractionOutcome, attempts } = await this.extractInvoiceDataWithRetry(text);
 
     const extraction = await this.repository.createExtraction({
       documentId: document._id,
       status: extractionOutcome.success ? "SUCCEEDED" : "FAILED",
-      attempts: 1,
+      attempts,
       modelName: env.OLLAMA_CHAT_MODEL,
       rawResponse: extractionOutcome.raw,
       structuredData: extractionOutcome.data ?? {},
@@ -248,6 +277,7 @@ export class DocumentIngestionService {
     }
 
     const mappedFields = mapInvoiceExtractionToInvoiceFields(extractionOutcome.data);
+    mappedFields.totalAmount = resolveInvoiceTotal(text, extractionOutcome.data.totals);
 
     // Only checked when all three are present -- vendor name, invoice number, and
     // invoice date together, not invoice number alone, since two unrelated vendors can
@@ -359,12 +389,12 @@ export class DocumentIngestionService {
       };
     }
 
-    const outcome = await this.ollamaService.extractInvoiceData(textToExtract);
+    const { outcome, attempts } = await this.extractInvoiceDataWithRetry(textToExtract);
 
     const extraction = await this.repository.createExtraction({
       documentId: document._id,
       status: outcome.success ? "SUCCEEDED" : "FAILED",
-      attempts: 1,
+      attempts,
       modelName: env.OLLAMA_CHAT_MODEL,
       rawResponse: outcome.raw,
       structuredData: outcome.data ?? {},
@@ -387,9 +417,12 @@ export class DocumentIngestionService {
       };
     }
 
+    const mappedFields = mapInvoiceExtractionToInvoiceFields(outcome.data);
+    mappedFields.totalAmount = resolveInvoiceTotal(textToExtract, outcome.data.totals);
+
     const invoice = await this.repository.upsertInvoiceByDocumentId({
       documentId: document._id,
-      ...mapInvoiceExtractionToInvoiceFields(outcome.data),
+      ...mappedFields,
       status: "EXTRACTED",
       metadata: { source: "reindex" },
     });
